@@ -191,7 +191,7 @@
               <span v-if="isUpgrade(it)" class="up">▲</span>{{ itemTitle(it) }}
             </div>
             <div class="muted small">{{ rarity(it).name }} · Item level {{ it.ilvl }}</div>
-            <div v-for="l in itemLines(it)" class="stat" :class="{main: l.main}">{{ l.text }}</div>
+            <div v-for="l in itemLines(it)" class="stat" :class="{main: l.main, power: l.power}">{{ l.text }}</div>
           </div>
           <button class="btn btn-gold buy" :disabled="!inTown || state.gold < price(it)" @click="buyItem(it)">
             <small>Buy</small><span><i class="coin"></i>{{ fmt(price(it)) }}</span>
@@ -471,7 +471,7 @@
               <div class="slot-label muted">{{ sl.name }}</div>
               <template v-if="state.gear[sl.id]">
                 <div class="item-name" :style="{color: rarity(state.gear[sl.id]).color}">{{ itemTitle(state.gear[sl.id]) }}</div>
-                <div v-for="l in itemLines(state.gear[sl.id])" class="stat" :class="{main: l.main}">{{ l.text }}</div>
+                <div v-for="l in itemLines(state.gear[sl.id])" class="stat" :class="{main: l.main, power: l.power}">{{ l.text }}</div>
                 <div v-if="!canEquip(state.gear[sl.id])" class="warn">Needs a different class</div>
                 <button v-if="(state.gear[sl.id].enh || 0) < CONFIG.enhanceMax" class="btn tiny-text enh" :disabled="!inTown || state.gold < enhanceCost(state.gear[sl.id])" @click="enhance(state.gear[sl.id])"
                   :title="'Success chance ' + Math.round(enhanceChance(state.gear[sl.id]) * 100) + '%. Failing only costs the gold.'">
@@ -507,7 +507,7 @@
             </div>
             <div class="muted small">{{ rarity(it).name }} · Item level {{ it.ilvl }}<template v-if="it.cls && !canEquip(it)"> · <span class="warn">{{ CLASS_LIST.find(c => c.id === it.cls).name }} only</span></template></div>
             <div class="muted small sellmats">Sells for gold and {{ salvageMatsText(it) }}</div>
-            <div v-for="l in itemLines(it)" class="stat" :class="{main: l.main}">{{ l.text }}</div>
+            <div v-for="l in itemLines(it)" class="stat" :class="{main: l.main, power: l.power}">{{ l.text }}</div>
           </div>
           <div class="item-actions">
             <button class="btn" :disabled="!inTown || !canEquip(it)" @click="equipItem(it)">Equip</button>

@@ -38,7 +38,7 @@
     spellCooldown: 5,         // mage: seconds between spells before Arcane Focus
     dropChance: 0.015,        // chance a normal monster drops gear...
     bossDropChance: 0.3,      // ...and a boss (zone guardians always drop a Rare or better)
-    dropIlvlBehind: 10,       // dropped gear is this many floors behind where it dropped (crafted gear can be ahead)
+    dropIlvlSpread: 10,       // dropped gear is item level = start of its realm + up to this much (crafted gear reaches near the top)
     salvageMatBase: 1,        // selling gear gives back this many of each recipe material (+1 per rarity step)
     bagSize: 24,
     merchantSize: 5,          // items for sale in town
@@ -55,7 +55,7 @@
     killsPerLevelRamp: 40,       // ...easing up to killsPerLevelStart by this floor
     killsPerLevelStart: 210,
     killsPerLevelEnd: 290,
-    attrGrowth: 1.07,         // Strength / Vitality compound by this per point...
+    attrGrowth: 1.038,        // Strength / Vitality compound by this per point...
     dmgBase: 3, dmgPerPoint: 0.3,   // ...on top of a flat base + per-point amount
     hpBase: 30, hpPerPoint: 3,
     agiSpeed: 0.03,           // +3% attack speed per Agility point...
@@ -67,7 +67,12 @@
     respecMult: 25,           // respec cost = 25 kills' worth of gold at your deepest floor this run
     // gold sinks
     enhanceMax: 10,
-    enhanceStep: 0.08,        // each + adds 8% to all of an item's stats
+    enhanceStep: 0.08,        // each + adds 8% to all of an item's stats and its power multiplier
+    // Gear power: a weapon multiplies damage, helm and armor multiply health. The multiplier grows with
+    // item level (like monsters grow with floors), so old gear falls behind and each realm needs new gear.
+    gearGrowth: 1.035,        // power multiplier per item level
+    gearRarityMult: 1.35,     // x this per rarity step (Rare = 1.35^2, Legendary = 1.35^4)
+    armorShare: 0.6,          // armor gives this share of the health multiplier, the helm the rest
     enhanceBase: 6,
     enhanceGrowth: 1.6,       // each step costs this much more
     enhanceChance: [1, 1, 1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3],   // success chance for +1 ... +10 (failing only costs gold)
@@ -557,11 +562,12 @@
     cls() { return CLASSES[this.s.cls] || CLASSES.knight; }
     gemMult() { return 1 + this.s.gems * CONFIG.gemBonus; }
 
-    gearTotals() {
+    gearTotals(gear) {
       const t = {};
+      gear = gear || this.s.gear;
       Object.keys(STAT_DEFS).forEach((k) => { t[k] = 0; });
       SLOTS.forEach((sl) => {
-        const it = this.s.gear[sl.id];
+        const it = gear[sl.id];
         if (!it || !this.canEquip(it)) return;
         Object.keys(it.stats).forEach((k) => { t[k] += this.itemStat(it, k); });
       });
@@ -571,10 +577,28 @@
     // An item's stat including its enhancement (+1 to +10).
     itemStat(item, k) { return item.stats[k] * (1 + (item.enh || 0) * CONFIG.enhanceStep); }
 
-    stats() {
-      const a = this.s.hero.attrs, gm = this.gemMult(), c = this.cls(), g = this.gearTotals();
-      const atk = ATTR.damage(a.str) * gm * c.atk * (1 + g.dmg / 100);
-      const maxHp = ATTR.health(a.vit) * gm * c.hp * (1 + g.hp / 100);
+    // An item's power multiplier: grows with item level, rarity and enhancement. No item = x1.
+    gearFactor(item) {
+      if (!item || !this.canEquip(item)) return 1;
+      return Math.pow(CONFIG.gearGrowth, item.ilvl) * Math.pow(CONFIG.gearRarityMult, item.rarity) * (1 + (item.enh || 0) * CONFIG.enhanceStep);
+    }
+
+    // What a slot's item multiplies: the weapon multiplies damage; armor and helm share the health multiplier.
+    slotPower(slot, item) {
+      const f = this.gearFactor(item);
+      if (slot === 'weapon') return { stat: 'damage', mult: f };
+      if (slot === 'armor') return { stat: 'health', mult: Math.pow(f, CONFIG.armorShare) };
+      if (slot === 'helm') return { stat: 'health', mult: Math.pow(f, 1 - CONFIG.armorShare) };
+      return null;
+    }
+
+    // gear: optional { weapon, helm, armor, trinket } to evaluate instead of what's equipped.
+    stats(gear) {
+      gear = gear || this.s.gear;
+      const a = this.s.hero.attrs, gm = this.gemMult(), c = this.cls(), g = this.gearTotals(gear);
+      const atk = ATTR.damage(a.str) * gm * c.atk * (1 + g.dmg / 100) * this.slotPower('weapon', gear.weapon).mult;
+      const maxHp = ATTR.health(a.vit) * gm * c.hp * (1 + g.hp / 100) *
+        this.slotPower('armor', gear.armor).mult * this.slotPower('helm', gear.helm).mult;
       const healMult = 1;
       const speed = ATTR.speed(a.agi) * c.speed * (1 + g.speed / 100);
       const crit = Math.min(CONFIG.critCap, ATTR.crit(a.foc) + g.crit / 100);
@@ -909,7 +933,8 @@
     rollDrop(m) {
       const chance = m.guardian ? 1 : m.boss ? CONFIG.bossDropChance : CONFIG.dropChance;
       if (Math.random() >= chance) return;
-      const s = this.s, ilvl = Math.max(1, m.floor - CONFIG.dropIlvlBehind);
+      const s = this.s, realmStart = Math.floor((m.floor - 1) / CONFIG.zoneLength) * CONFIG.zoneLength + 1;
+      const ilvl = Math.min(m.floor, realmStart + Math.floor(Math.random() * (CONFIG.dropIlvlSpread + 1)));
       const item = makeItem(ilvl, this.cls().id, { minRarity: m.guardian ? 2 : m.boss ? 1 : 0, weights: DROP_WEIGHTS }, Math.random, s.nextItemId++);
       s.stats.itemsFound++;
       const full = s.bag.length >= CONFIG.bagSize;
@@ -938,7 +963,17 @@
       return p;
     }
 
-    isUpgrade(item) { return this.canEquip(item) && this.itemPower(item) > this.itemPower(this.s.gear[item.slot]); }
+    // Compares the whole hero with and without the item: damage output and survivability (and a little gold find).
+    gearScore(gear) {
+      const d = this.stats(gear);
+      return Math.log(d.heroDps) + 0.6 * Math.log(d.maxHp * (1 + d.evade + d.block) / (1 - d.dr)) + 0.15 * Math.log(d.goldMult);
+    }
+    isUpgrade(item) {
+      if (!this.canEquip(item)) return false;
+      const cur = this.s.gear, alt = Object.assign({}, cur);
+      alt[item.slot] = item;
+      return this.gearScore(alt) > this.gearScore(cur) + 1e-9;
+    }
 
     salvageValue(item) { return goldAt(item.ilvl) * (3 + item.rarity * 4); }
 

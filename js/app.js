@@ -439,7 +439,11 @@
       };
       function itemLines(item) {
         const keys = Object.keys(item.stats).sort((a, b) => (a === item.main ? -1 : b === item.main ? 1 : 0));
-        return keys.map((k) => ({ main: k === item.main, text: '+' + pct(game.itemStat(item, k)) + ' ' + DD.STAT_DEFS[k].name }));
+        const lines = keys.map((k) => ({ main: k === item.main, text: '+' + pct(game.itemStat(item, k)) + ' ' + DD.STAT_DEFS[k].name }));
+        // the item's power multiplier comes first: it's the biggest thing the item does
+        const p = game.slotPower(item.slot, item);
+        if (p) lines.unshift({ power: true, text: '×' + DD.fmt(p.mult) + ' ' + p.stat });
+        return lines;
       }
       const canEquip = (item) => game.canEquip(item);
       const isUpgrade = (item) => game.isUpgrade(item);
