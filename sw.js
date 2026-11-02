@@ -1,10 +1,10 @@
 /* Deepdelve - service worker: lets the game load offline after the first visit.
  * Network first: when online, players always get the newest version, and the copy in the cache
  * is refreshed. When offline, the cached copy is used. Only runs on a real website (https). */
-const CACHE = 'deepdelve-v1';
+const CACHE = 'deepdelve-v2';
 const CORE = [
   './', './index.html', './css/style.css', './manifest.webmanifest',
-  './js/game.js', './js/sprites.js', './js/render.js', './js/save.js', './js/app.js',
+  './js/game.js?v=20261103a', './js/sprites.js?v=20261103a', './js/render.js?v=20261103a', './js/save.js?v=20261103a', './js/app.js?v=20261103a', './css/style.css?v=20261103a',
   './icons/icon-192.png', './icons/icon-512.png'
 ];
 
@@ -22,7 +22,10 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   e.respondWith(
-    fetch(e.request)
+    // For the game's own files, 'no-cache' = always ask the server whether the file changed,
+    // so a browser never mixes an old and a new file after an update
+    fetch(e.request.mode !== 'navigate' && new URL(e.request.url).origin === self.location.origin
+      ? new Request(e.request, { cache: 'no-cache' }) : e.request)
       .then((res) => {
         // keep a copy of anything that loaded (game files, Vue, fonts)
         if (res.ok || res.type === 'opaque') {

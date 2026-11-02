@@ -40,7 +40,7 @@
 
   const pct = (v) => (v >= 10 ? Math.round(v) : v.toFixed(1)) + '%';
 
-  createApp({
+  const app = createApp({
     setup() {
       const loaded = readSave();
       const saved = loaded.status === 'ok' ? loaded.data : null;
@@ -110,10 +110,12 @@
       };
       // count of a node's material at each quality
       const matCounts = (nodeId) => { void state.materials; return DD.RARITIES.map((r, q) => state.materials[nodeId + ':' + q] || 0); };
+      // sort key: a material's skill, with meat (which has no skill) after the gathered materials of its zone
+      const matGroup = (m) => (m.node && m.node.skill) || 'zzz-meat';
       const materials = computed(() => Object.keys(state.materials).filter((k) => state.materials[k] > 0).map((k) => {
         const parts = k.split(':');
         return { key: k, node: game.matDef(parts[0]), q: +parts[1], count: state.materials[k], value: game.materialValue(k) };
-      }).sort((a, b) => (a.node.zone - b.node.zone) || a.node.skill.localeCompare(b.node.skill) || (a.q - b.q)));
+      }).sort((a, b) => (a.node.zone - b.node.zone) || matGroup(a).localeCompare(matGroup(b)) || (a.q - b.q)));
       const commonValue = computed(() => materials.value.filter((m) => m.q === 0).reduce((t, m) => t + m.count * m.value, 0));
       function startGather(n) {
         if (state.location === 'delve') { toast('Return to town before you set out to gather.', 'bad'); return; }
@@ -494,5 +496,18 @@
         owns: (sku) => game.owns(sku)
       };
     }
-  }).mount('#app');
+  });
+  // If something breaks while drawing, show the error instead of a blank page, so it can be reported.
+  app.config.errorHandler = (err, inst, info) => {
+    console.error(err);
+    let box = document.getElementById('crash');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'crash';
+      box.innerHTML = '<b>Something went wrong.</b> Your progress is saved. Please reload the page, and if this keeps happening, send this message: <code></code>';
+      document.body.appendChild(box);
+    }
+    box.querySelector('code').textContent = (err && err.message ? err.message : String(err)) + ' (' + info + ')';
+  };
+  app.mount('#app');
 })();
