@@ -48,6 +48,8 @@
     // killsPerLevel kills to level up there (rising from Start to End by floor 250; boss x5, guardian x15).
     // Below the expected level you catch up faster; above it, slower.
     levelsPerFloor: 0.95,
+    killsPerLevelFirst: 8,       // early ramp: the first levels take only a few kills...
+    killsPerLevelRamp: 40,       // ...easing up to killsPerLevelStart by this floor
     killsPerLevelStart: 210,
     killsPerLevelEnd: 290,
     attrGrowth: 1.07,         // Strength / Vitality compound by this per point...
@@ -238,7 +240,12 @@
   }
   // XP for one ordinary kill on a floor (see levelsPerFloor / killsPerLevel in CONFIG).
   function monsterXp(floor) {
-    const k = CONFIG.killsPerLevelStart + (CONFIG.killsPerLevelEnd - CONFIG.killsPerLevelStart) * Math.min(1, (floor - 1) / 249);
+    const C = CONFIG;
+    let k = C.killsPerLevelStart + (C.killsPerLevelEnd - C.killsPerLevelStart) * Math.min(1, (floor - 1) / 249);
+    if (floor < C.killsPerLevelRamp) {
+      const t = (floor - 1) / (C.killsPerLevelRamp - 1);   // 0 at floor 1, 1 at the end of the ramp
+      k = C.killsPerLevelFirst + (k - C.killsPerLevelFirst) * t * t;   // eases in: quick levels first
+    }
     return xpToLevel(Math.max(1, Math.round(floor * CONFIG.levelsPerFloor))) / k;
   }
   function goldAt(floor) { return CONFIG.monsterGoldBase * scaleAt(floor, CONFIG.monsterGoldGrowth, CONFIG.zoneGoldJump); }
