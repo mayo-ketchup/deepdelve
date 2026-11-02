@@ -36,7 +36,10 @@
     gemBonus: 0.02,           // each Soul Gem: +2% damage, health, gold, companion DPS
     gemPow: 2,                // Soul Gems owed for your deepest floor ever: (floor / 10) ^ gemPow
     spellCooldown: 5,         // mage: seconds between spells before Arcane Focus
-    dropChance: 0.06,         // chance a normal monster drops gear (bosses always drop)
+    dropChance: 0.015,        // chance a normal monster drops gear...
+    bossDropChance: 0.3,      // ...and a boss (zone guardians always drop a Rare or better)
+    dropIlvlBehind: 10,       // dropped gear is this many floors behind where it dropped (crafted gear can be ahead)
+    salvageMatBase: 1,        // selling gear gives back this many of each recipe material (+1 per rarity step)
     bagSize: 24,
     merchantSize: 5,          // items for sale in town
     // hero levels: XP from kills, points to assign
@@ -294,21 +297,25 @@
 
   function pick(arr, r) { return arr[Math.floor(r() * arr.length)]; }
 
-  function rollRarity(r, min) {
-    const pool = RARITIES.slice(min || 0);
-    let t = pool.reduce((a, x) => a + x.weight, 0) * r();
-    for (let i = 0; i < pool.length; i++) {
-      t -= pool[i].weight;
-      if (t < 0) return RARITIES.indexOf(pool[i]);
+  // Rarity odds for gear that drops or the merchant sells: mostly ordinary, and never Legendary.
+  // Legendary gear only comes from crafting.
+  const DROP_WEIGHTS = [70, 25, 4.5, 0.5, 0];
+
+  function rollRarity(r, min, weights) {
+    const w = (weights || RARITIES.map((x) => x.weight)).map((x, i) => (i < (min || 0) ? 0 : x));
+    let t = w.reduce((a, x) => a + x, 0) * r();
+    for (let i = 0; i < w.length; i++) {
+      t -= w[i];
+      if (t < 0 && w[i] > 0) return i;
     }
-    return RARITIES.length - 1;
+    return w.reduce((best, x, i) => (x > 0 ? i : best), 0);
   }
 
   // ilvl = the floor it dropped on. cls = the class that found it (weapons are class-locked).
   function makeItem(ilvl, cls, opts, r, id) {
     r = r || Math.random;
     opts = opts || {};
-    const ri = opts.rarity != null ? opts.rarity : rollRarity(r, opts.minRarity);
+    const ri = opts.rarity != null ? opts.rarity : rollRarity(r, opts.minRarity, opts.weights);
     const rar = RARITIES[ri];
     const slot = opts.slot ? SLOTS.find((x) => x.id === opts.slot) : pick(SLOTS, r);
     const stats = {};
@@ -653,7 +660,7 @@
     restock() {
       const s = this.s, ilvl = Math.max(1, s.runMaxFloor);
       s.merchant.stock = SLOTS.concat(SLOTS).slice(0, CONFIG.merchantSize).map((sl) =>
-        makeItem(ilvl, this.cls().id, { minRarity: 1, slot: sl.id }, Math.random, s.nextItemId++));
+        makeItem(ilvl, this.cls().id, { minRarity: 1, slot: sl.id, weights: DROP_WEIGHTS }, Math.random, s.nextItemId++));
       s.merchant.restockAt = s.stats.playSeconds + CONFIG.merchantRestock;
       this.emit('restock');
     }
@@ -900,15 +907,17 @@
 
     // ---- gear ----
     rollDrop(m) {
-      if (!m.boss && Math.random() >= CONFIG.dropChance) return;
-      const s = this.s;
-      const item = makeItem(m.floor, this.cls().id, { minRarity: m.guardian ? 2 : m.boss ? 1 : 0 }, Math.random, s.nextItemId++);
+      const chance = m.guardian ? 1 : m.boss ? CONFIG.bossDropChance : CONFIG.dropChance;
+      if (Math.random() >= chance) return;
+      const s = this.s, ilvl = Math.max(1, m.floor - CONFIG.dropIlvlBehind);
+      const item = makeItem(ilvl, this.cls().id, { minRarity: m.guardian ? 2 : m.boss ? 1 : 0, weights: DROP_WEIGHTS }, Math.random, s.nextItemId++);
       s.stats.itemsFound++;
       const full = s.bag.length >= CONFIG.bagSize;
       if (full || item.rarity < s.settings.autoSalvage) {
         const g = this.salvageValue(item);
         s.gold += g;
         s.stats.totalGold += g;
+        this.giveSalvageMats(item);
         this.emit('loot', { item, monster: m, salvaged: g, full });
         return;
       }
@@ -932,6 +941,19 @@
     isUpgrade(item) { return this.canEquip(item) && this.itemPower(item) > this.itemPower(this.s.gear[item.slot]); }
 
     salvageValue(item) { return goldAt(item.ilvl) * (3 + item.rarity * 4); }
+
+    // Materials you get back for selling an item: Common materials from its zone, of the same kinds
+    // its recipe uses (+1 each per rarity step). Always less than crafting it costs, so no loop.
+    salvageMats(item) {
+      const tier = Math.min(ZONES.length - 1, Math.floor((item.ilvl - 1) / CONFIG.zoneLength));
+      const base = item.slot === 'weapon' ? RECIPES.weapon[item.cls || this.cls().id] : RECIPES[item.slot];
+      const count = CONFIG.salvageMatBase + item.rarity;
+      return Object.keys(base).map((type) => ({
+        node: NODES.find((x) => x.zone === tier && SKILLS.find((sk) => sk.id === x.skill).mat === type), count
+      }));
+    }
+
+    giveSalvageMats(item) { this.salvageMats(item).forEach((m) => this.addMat(m.node.id, 0, m.count)); }
 
     // Equipping, unequipping and selling only work in town.
     equipItem(id) {
@@ -960,6 +982,7 @@
       s.bag = s.bag.filter((it) => {
         if (ids.indexOf(it.id) === -1) return true;
         total += this.salvageValue(it);
+        this.giveSalvageMats(it);
         return false;
       });
       s.gold += total;
@@ -1735,7 +1758,7 @@
   const DD = root.DD || (root.DD = {});
   Object.assign(DD, {
     CONFIG, CLASSES, CLASS_LIST, SPELLS, ATTRS, FOCUS_PERK, COMPANIONS, MONSTERS, ZONES, SLOTS, RARITIES, STAT_DEFS,
-    SKILLS, NODES, CRAFTING, RECIPES, QUALITY_VALUE, CRAFT_TIER_LEVEL, xpForLevel, levelFromXp,
+    SKILLS, NODES, CRAFTING, RECIPES, DROP_WEIGHTS, QUALITY_VALUE, CRAFT_TIER_LEVEL, xpForLevel, levelFromXp,
     MEATS, MEALS, COOKING, scaleAt,
     SKINS, STORE_ITEMS, xpToLevel,
     newState, hydrate, monsterAt, zoneAt, makeItem, compDpsAt, Game, fmt, fmtTime

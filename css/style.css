@@ -412,3 +412,4 @@ table.stats td:last-child { font-size: 17px; }
 /* ---- welcome-back summary ---- */
 .summary { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; font-size: 19px; }
 .summary .big { margin: 4px 0; }
+.sellmats { color: #9ab87a; }

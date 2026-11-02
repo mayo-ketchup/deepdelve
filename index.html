@@ -190,7 +190,7 @@
             <div class="item-name" :style="{color: rarity(it).color}">
               <span v-if="isUpgrade(it)" class="up">▲</span>{{ itemTitle(it) }}
             </div>
-            <div class="muted small">{{ rarity(it).name }} · Floor {{ it.ilvl }}</div>
+            <div class="muted small">{{ rarity(it).name }} · Item level {{ it.ilvl }}</div>
             <div v-for="l in itemLines(it)" class="stat" :class="{main: l.main}">{{ l.text }}</div>
           </div>
           <button class="btn btn-gold buy" :disabled="!inTown || state.gold < price(it)" @click="buyItem(it)">
@@ -497,7 +497,7 @@
           </label>
           <button class="btn tiny-text" :disabled="!inTown || !state.bag.length" @click="salvageJunk">Sell non-upgrades</button>
         </div>
-        <p v-if="!state.bag.length" class="muted">Monsters sometimes drop gear, and bosses always do. The merchant in town sells more. Your gear stays with you when you retire.</p>
+        <p v-if="!state.bag.length" class="muted">Monsters sometimes drop gear, and zone guardians always do. Your best gear comes from crafting; selling unwanted gear gives back crafting materials. Your gear stays with you when you retire.</p>
 
         <div v-for="it in bagSorted" :key="it.id" class="card item" :style="{borderColor: rarity(it).color}">
           <img :src="itemIcon(it)" width="40" height="40" :alt="it.name">
@@ -505,7 +505,8 @@
             <div class="item-name" :style="{color: rarity(it).color}">
               <span v-if="isUpgrade(it)" class="up">▲</span>{{ itemTitle(it) }}
             </div>
-            <div class="muted small">{{ rarity(it).name }} · Floor {{ it.ilvl }}<template v-if="it.cls && !canEquip(it)"> · <span class="warn">{{ CLASS_LIST.find(c => c.id === it.cls).name }} only</span></template></div>
+            <div class="muted small">{{ rarity(it).name }} · Item level {{ it.ilvl }}<template v-if="it.cls && !canEquip(it)"> · <span class="warn">{{ CLASS_LIST.find(c => c.id === it.cls).name }} only</span></template></div>
+            <div class="muted small sellmats">Sells for gold and {{ salvageMatsText(it) }}</div>
             <div v-for="l in itemLines(it)" class="stat" :class="{main: l.main}">{{ l.text }}</div>
           </div>
           <div class="item-actions">

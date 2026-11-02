@@ -444,6 +444,8 @@
       const canEquip = (item) => game.canEquip(item);
       const isUpgrade = (item) => game.isUpgrade(item);
       const salvageValue = (item) => game.salvageValue(item);
+      // "+3 Bog Iron Ore, +3 Willow Log": the materials selling an item gives back
+      const salvageMatsText = (item) => game.salvageMats(item).map((m) => '+' + m.count + ' ' + m.node.item).join(', ');
       const equipItem = (item) => { game.equipItem(item.id); };
       const unequip = (slot) => {
         if (!game.unequip(slot)) toast('Your bag is full.', 'bad');
@@ -483,7 +485,7 @@
         fmt: DD.fmt, fmtTime: DD.fmtTime,
         tap, challenge, quote, buy, describe, level, setBuyMode, chooseClass, openRetire, confirmPrestige, hardReset,
         heroPreview, skinPreview, ownsSkin, equip, purchase,
-        rarity, itemIcon, slotIcon, itemLines, canEquip, isUpgrade, salvageValue, equipItem, unequip, salvageItem, salvageJunk,
+        rarity, itemIcon, slotIcon, itemLines, canEquip, isUpgrade, salvageValue, salvageMatsText, equipItem, unequip, salvageItem, salvageJunk,
         saveNow: () => { save(); toast('Game saved.', 'info'); },
         owns: (sku) => game.owns(sku)
       };
