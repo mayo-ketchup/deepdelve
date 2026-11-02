@@ -66,7 +66,28 @@
     gatherDoublePerLevel: 0.005,    // +0.5% chance per level to gather 2 at once
     qualityUnlock: [1, 1, 10, 25, 40],   // gathering level at which each quality can drop (Common..Legendary)
     masterworkPerLevel: 0.005,      // +0.5% chance per Crafting level that a piece comes out one rarity higher
-    refineRatio: 4                  // 4 materials of one quality refine into 1 of the next
+    refineRatio: 4,                 // 4 materials of one quality refine into 1 of the next
+    // energy: only life skills use it (gathering). Combat, crafting and cooking are free.
+    energyBase: 300,
+    energyPerGuardian: 60,          // max energy grows with each zone guardian beaten
+    energyRegenHours: 1.5,          // a full bar regenerates in this long...
+    energyRestMult: 1.5,            // ...and 1.5x faster resting in Hearthstead
+    gatherEnergy: [1, 1.25, 1.5, 1.75, 2],   // energy per gather, by zone tier
+    // meat: dropped by monsters, never gathered, so cooking always needs combat
+    meatChance: 0.10,
+    meatBoss: 2,
+    meatGuardian: 5,
+    // cooking
+    cookBurnBase: 0.30,             // burn chance at a recipe's required level...
+    cookBurnPerLevel: 0.015,        // ...minus this per level above it
+    pantryBase: 10,                 // pantry holds pantryBase + (Cooking level - 1) meals
+    mealTierBonus: 0.25,            // meals restore +25% per zone tier...
+    mealQualityBonus: 0.15,         // ...and +15% per ingredient quality step
+    // routines
+    routineBaseSteps: 2,            // steps available at the start, +1 per zone guardian
+    routineMaxSteps: 7,
+    offlineReplay: 0.4,             // offline: the game replays this share of your time away
+    offlineStep: 0.1                // seconds per simulated step during offline replay
   };
 
   // ---- classes ----
@@ -351,6 +372,24 @@
     n.zoneFloor = n.zone * CONFIG.zoneLength + 1;
   });
 
+  // ---- meat & cooking ----
+  // Meat drops from monsters (one kind per zone). It can't be gathered, so a pantry always needs combat.
+  const MEATS = ['Wolf Haunch', 'Toad Legs', 'Bat Wing', 'Imp Flank', 'Starflesh'].map((item, zone) => (
+    { id: 'meat' + zone, item, zone, zoneFloor: zone * CONFIG.zoneLength + 1, meat: true }));
+
+  const COOKING = { id: 'cooking', name: 'Cooking' };
+
+  // Meals restore energy only. Ingredients come from the meal's zone tier; fish and herbs set the quality.
+  // energy: instant refill. regen: multiplies energy regeneration for `duration` seconds.
+  // maxBonus: raises max energy for `duration` seconds. auto: eaten by the auto-eat rule.
+  const MEALS = [
+    { id: 'ration', name: 'Ration',            level: 1,  meat: 2, fish: 0, herb: 1, energy: 40,  auto: true, xpMult: 1 },
+    { id: 'stew',   name: 'Stew',              level: 10, meat: 3, fish: 2, herb: 1, energy: 120, auto: true, xpMult: 1.5 },
+    { id: 'roast',  name: 'Slow-cooked Roast', level: 20, meat: 3, fish: 2, herb: 2, regen: 2, duration: 3600, auto: false, xpMult: 2 },
+    { id: 'feast',  name: 'Feast',             level: 35, meat: 5, fish: 3, herb: 3, energy: 60, maxBonus: 100, duration: 3600, auto: true, xpMult: 3 }
+  ];
+  const COOK_TIER_XP = [12, 30, 60, 100, 160];
+
   // Total XP needed to reach a level.
   function xpForLevel(L) { return L <= 1 ? 0 : Math.round(60 * (Math.pow(1.13, L - 1) - 1) / 0.13); }
   function levelFromXp(xp) {
@@ -418,15 +457,21 @@
       skin: 'steel',
       skinsOwned: ['steel'],
       purchases: [],
-      skillXp: Object.assign(zeros(SKILLS), { crafting: 0 }),
+      skillXp: Object.assign(zeros(SKILLS), { crafting: 0, cooking: 0 }),
       craft: null,            // { slot, tier, quality } while location is 'craft' (working the forge)
+      cook: null,             // { meal, tier, quality } while location is 'cook' (at the campfire)
+      energy: { cur: CONFIG.energyBase, regenUntil: 0, feastUntil: 0, feastBonus: 0 },   // timers use stats.playSeconds
+      pantry: {},             // "mealId:tier:quality" -> count
+      // A routine is a loop of steps. Each step: { act, target, until, value }. See routineTick().
+      routine: { on: false, steps: [], idx: 0, startedAt: 0, count: 0 },
       materials: {},          // material id (= node id) -> count
       gatherNode: null,       // node being gathered while location is 'gather'
-      stats: { totalGold: 0, monstersSlain: 0, bossesSlain: 0, guardiansSlain: 0, prestiges: 0, gemsEarned: 0, itemsFound: 0, itemsCrafted: 0, deaths: 0, playSeconds: 0 },
+      stats: { totalGold: 0, monstersSlain: 0, bossesSlain: 0, guardiansSlain: 0, prestiges: 0, gemsEarned: 0, itemsFound: 0, itemsCrafted: 0, mealsCooked: 0, mealsEaten: 0, deaths: 0, playSeconds: 0 },
       // autoSalvage: drops below this rarity index are salvaged.
       // autoReturn: walk back to town when HP falls below this fraction (0 = never).
       // autoDelve: after an automatic trip to town (low HP or death), set out again once fully rested.
-      settings: { buyMode: 1, autoSalvage: 0, autoReturn: 0.25, autoDelve: true },
+      // autoEat: eat from the pantry when energy falls below this fraction (0 = never). eatOrder: 'small' | 'big'.
+      settings: { buyMode: 1, autoSalvage: 0, autoReturn: 0.25, autoDelve: true, autoEat: 0.15, eatOrder: 'small' },
       lastSeen: Date.now()
     };
   }
@@ -514,8 +559,8 @@
     }
 
     // ---- town (Hearthstead) ----
-    // Working the forge counts as being in town (you can still shop and change gear).
-    inTown() { return this.s.location === 'town' || this.s.location === 'craft'; }
+    // Working the forge or the campfire counts as being in town (you can still shop and change gear).
+    inTown() { return this.s.location === 'town' || this.s.location === 'craft' || this.s.location === 'cook'; }
 
     // Deepest floor you can set out from: the floor after the last boss beaten this run.
     maxCheckpoint() {
@@ -529,13 +574,13 @@
       return out;
     }
 
-    // reason: 'manual' | 'auto' (low HP) | 'death'
+    // reason: 'manual' | 'auto' (low HP) | 'death' | 'tired' (out of energy) | 'routine' (a routine changing activity)
     goToTown(reason) {
       const s = this.s, b = this.b;
       if (s.location === 'town') return false;
       s.location = 'town';
       b.monster = null;
-      b.autoTrip = reason !== 'manual';
+      b.autoTrip = reason === 'auto' || reason === 'death';
       if (reason === 'death') b.heroHp = this.stats().maxHp * 0.05;
       if (!s.merchant.stock.length) this.restock();
       this.emit('town', { reason });
@@ -552,7 +597,7 @@
     }
 
     // floor defaults to where the hero left off (s.floor doesn't change while in town).
-    depart(floor) {
+    depart(floor, keepAdvance) {
       const s = this.s, b = this.b;
       if (!this.inTown()) return false;
       floor = Math.max(1, Math.min(s.runMaxFloor, Math.floor(floor || s.floor)));
@@ -561,7 +606,7 @@
       s.kills = 0;
       // Setting out by hand pushes forward. Going back out on your own after a death keeps farming
       // the floor below, so a hero can't loop into the boss that just killed it.
-      if (!b.autoTrip) s.autoAdvance = true;
+      if (!b.autoTrip && !keepAdvance) s.autoAdvance = true;
       Object.assign(b, { monster: null, spawn: 1, autoTrip: false, heroAtk: 0.3, spellTimer: 1.5, compTimer: 1 });
       this.emit('depart', { floor });
       return true;
@@ -618,15 +663,17 @@
       b.heroCast = Math.max(0, b.heroCast - dt);
       b.tapCd = Math.max(0, b.tapCd - dt);
       if (s.stats.playSeconds >= s.merchant.restockAt) this.restock();
+      this.regenEnergy(dt);
+      if (s.routine.on) this.routineTick();
 
       if (s.location === 'town') {
         b.heroHp = Math.min(d.maxHp, b.heroHp + d.maxHp * CONFIG.restRate * d.healMult * dt);
-        if (b.autoTrip && s.settings.autoDelve && b.heroHp >= d.maxHp) this.depart(s.floor);
+        if (b.autoTrip && s.settings.autoDelve && !s.routine.on && b.heroHp >= d.maxHp) this.depart(s.floor);
         return;
       }
-      if (s.location === 'craft') {
+      if (s.location === 'craft' || s.location === 'cook') {
         b.heroHp = Math.min(d.maxHp, b.heroHp + d.maxHp * CONFIG.restRate * dt);
-        this.craftTick(dt);
+        if (s.location === 'craft') this.craftTick(dt); else this.cookTick(dt);
         return;
       }
       if (s.location === 'gather') {
@@ -739,6 +786,7 @@
       this.emit('kill', { monster: m, gold });
       this.gainXp(m.xp);
       this.rollDrop(m);
+      this.dropMeat(m);
       if (m.boss) {
         s.stats.bossesSlain++;
         if (m.guardian) s.stats.guardiansSlain++;
@@ -1115,16 +1163,26 @@
       return n.time * (1 - Math.min(0.4, over * 0.01));
     }
 
+    // A material's info: a gathering node, or a kind of meat.
+    matDef(id) { return this.node(id) || MEATS.find((m) => m.id === id); }
+
     // key = "nodeId:quality"
     materialValue(key) {
-      const parts = String(key).split(':'), n = this.node(parts[0]);
-      return n ? goldAt(n.zoneFloor + 4) * QUALITY_VALUE[+parts[1] || 0] : 0;
+      const parts = String(key).split(':'), n = this.matDef(parts[0]);
+      if (!n) return 0;
+      return goldAt(n.zoneFloor + 4) * QUALITY_VALUE[+parts[1] || 0] * (n.meat ? 0.5 : 1);
     }
+
+    energyCost(n) { return CONFIG.gatherEnergy[n.zone]; }
+
+    // Can the hero afford one gather right now (counting food the auto-eat rule may eat)?
+    canGather(n) { return this.s.energy.cur >= this.energyCost(n) || !!this.mealToAutoEat(true); }
 
     // Start gathering from town, or switch node while already gathering.
     startGather(id) {
       const s = this.s, n = this.node(id);
       if (!n || this.nodeLock(n) || (!this.inTown() && s.location !== 'gather')) return false;
+      if (!this.canGather(n)) { this.emit('tired', { node: n }); return false; }
       s.location = 'gather';
       s.gatherNode = id;
       this.b.monster = null;
@@ -1137,10 +1195,19 @@
     gatherTick(dt) {
       const s = this.s, b = this.b, n = this.node(s.gatherNode);
       if (!n) { s.location = 'town'; return; }
+      this.autoEat();
+      if (s.energy.cur < this.energyCost(n)) {
+        // Out of energy. A routine moves on by itself; otherwise the hero walks home to rest.
+        b.tired = true;
+        if (!s.routine.on) this.goToTown('tired');
+        return;
+      }
+      b.tired = false;
       b.gatherT = (b.gatherT || 0) + dt;
       const t = this.gatherTime(n);
       if (b.gatherT < t) return;
       b.gatherT -= t;
+      s.energy.cur -= this.energyCost(n);
       this.collect(n, 1);
     }
 
@@ -1150,6 +1217,7 @@
       const got = [0, 0, 0, 0, 0];
       for (let i = 0; i < actions; i++) got[this.rollQuality(p.luck, p.level)] += Math.random() < p.double ? 2 : 1;
       got.forEach((c, q) => { if (c) this.addMat(n.id, q, c); });
+      if (s.routine.on) s.routine.count += got.reduce((a, c) => a + c, 0);
       const xp = n.xp * actions;
       this.addSkillXp(n.skill, xp);
       const after = this.skillLevel(n.skill);
@@ -1261,6 +1329,7 @@
       item.crafted = true;
       s.bag.push(item);
       s.stats.itemsCrafted++;
+      if (s.routine.on) s.routine.count++;
       this.addSkillXp('crafting', r.xp);
       this.emit('craft', { item, master, xp: r.xp });
       const after = this.skillLevel('crafting');
@@ -1268,40 +1337,322 @@
       return item;
     }
 
-    // ---- offline progress ----
-    offline(seconds) {
-      const capped = Math.min(seconds, CONFIG.offlineCapHours * 3600);
-      if (this.s.location === 'craft' && this.s.craft) {
-        const c = this.s.craft, r = this.recipe(c.slot, c.tier, c.quality);
-        const count = Math.max(0, Math.min(Math.floor(capped * CONFIG.gatherOfflineEfficiency / r.time), r.canMake, CONFIG.bagSize - this.s.bag.length));
-        return { seconds: capped, gold: 0, craft: c, count };
-      }
-      if (this.inTown()) return { seconds: capped, gold: 0 };   // resting heroes don't earn
-      if (this.s.location === 'gather') {
-        const n = this.node(this.s.gatherNode);
-        const count = n ? Math.floor(capped * CONFIG.gatherOfflineEfficiency / this.gatherTime(n)) : 0;
-        return { seconds: capped, gold: 0, node: n, count, xp: n ? n.xp * count : 0 };
-      }
-      const d = this.stats();
-      let f = this.s.floor;
-      if (f % CONFIG.bossEvery === 0) f = Math.max(1, f - 1);
-      const m = monsterAt(f);
-      const timePerKill = m.hp / d.totalDps + CONFIG.spawnDelay + CONFIG.enterTime;
-      const eff = CONFIG.offlineEfficiency * (this.owns('royal_charter') ? 2 : 1);
-      return { seconds: capped, gold: (m.gold * d.goldMult / timePerKill) * capped * eff, xp: (m.xp / timePerKill) * capped * eff };
+    // ---- energy ----
+    zonesCleared() { return Math.floor((this.s.bestFloor - 1) / CONFIG.zoneLength); }
+    clock() { return this.s.stats.playSeconds; }
+
+    // Max energy: base + per guardian beaten (+ a Feast's temporary bonus).
+    maxEnergy() {
+      const e = this.s.energy;
+      const feast = e.feastUntil > this.clock() ? e.feastBonus : 0;
+      return CONFIG.energyBase + this.zonesCleared() * CONFIG.energyPerGuardian + feast;
     }
 
-    applyOffline(seconds) {
-      const r = this.offline(seconds);
-      if (r.count && r.node) r.got = this.collect(r.node, r.count);
-      if (r.count && r.craft) {
-        r.items = [];
-        for (let i = 0; i < r.count; i++) r.items.push(this.craftOne(this.recipe(r.craft.slot, r.craft.tier, r.craft.quality)));
+    regenRate() {
+      const e = this.s.energy, base = (CONFIG.energyBase + this.zonesCleared() * CONFIG.energyPerGuardian) / (CONFIG.energyRegenHours * 3600);
+      return base * (this.inTown() ? CONFIG.energyRestMult : 1) * (e.regenUntil > this.clock() ? e.regenMult || 2 : 1);
+    }
+
+    regenEnergy(dt) {
+      const e = this.s.energy;
+      e.cur = Math.min(this.maxEnergy(), e.cur + this.regenRate() * dt);
+    }
+
+    // ---- meat ----
+    dropMeat(m) {
+      const n = m.guardian ? CONFIG.meatGuardian : m.boss ? CONFIG.meatBoss : (Math.random() < CONFIG.meatChance ? 1 : 0);
+      if (!n) return;
+      const meat = MEATS[ZONES.indexOf(zoneAt(m.floor).zone)];   // the meat of the monster's zone
+      this.addMat(meat.id, 0, n);
+      this.emit('meat', { meat, count: n, monster: m });
+    }
+
+    // ---- pantry & eating ----
+    pantryCount() { const p = this.s.pantry; return Object.keys(p).reduce((t, k) => t + p[k], 0); }
+    pantryCap() { return CONFIG.pantryBase + this.skillLevel('cooking') - 1; }
+
+    meal(id) { return MEALS.find((x) => x.id === id); }
+
+    // What a meal with these ingredients does. key = "mealId:tier:quality".
+    mealEffect(key) {
+      const parts = key.split(':'), ml = this.meal(parts[0]), tier = +parts[1], q = +parts[2];
+      const k = (1 + tier * CONFIG.mealTierBonus) * (1 + q * CONFIG.mealQualityBonus);
+      return {
+        meal: ml, tier, quality: q,
+        energy: ml.energy ? Math.round(ml.energy * k) : 0,
+        maxBonus: ml.maxBonus ? Math.round(ml.maxBonus * k) : 0,
+        regen: ml.regen || 0,
+        duration: ml.duration ? Math.round(ml.duration * (1 + q * CONFIG.mealQualityBonus)) : 0
+      };
+    }
+
+    mealName(key) {
+      const f = this.mealEffect(key);
+      return (f.quality ? RARITIES[f.quality].name + ' ' : '') + ZONES[f.tier].adj[0] + ' ' + f.meal.name;
+    }
+
+    eat(key) {
+      const s = this.s, e = s.energy;
+      if (!s.pantry[key]) return false;
+      const f = this.mealEffect(key), now = this.clock();
+      if (f.maxBonus) { e.feastUntil = now + f.duration; e.feastBonus = f.maxBonus; }
+      if (f.regen) { e.regenUntil = now + f.duration; e.regenMult = f.regen; }
+      e.cur = Math.min(this.maxEnergy(), e.cur + f.energy);
+      if (!--s.pantry[key]) delete s.pantry[key];
+      s.stats.mealsEaten++;
+      this.emit('eat', { key, name: this.mealName(key), energy: f.energy, effect: f });
+      return true;
+    }
+
+    // The meal the auto-eat rule would pick (ignoring the energy threshold when `any` is true), or null.
+    mealToAutoEat(any) {
+      const s = this.s, e = s.energy;
+      if (!s.settings.autoEat) return null;
+      if (!any && e.cur >= s.settings.autoEat * this.maxEnergy()) return null;
+      const keys = Object.keys(s.pantry).filter((k) => s.pantry[k] > 0 && this.meal(k.split(':')[0]).auto);
+      if (!keys.length) return null;
+      const size = (k) => { const f = this.mealEffect(k); return f.energy + f.maxBonus; };
+      keys.sort((a, b) => size(a) - size(b));
+      return s.settings.eatOrder === 'big' ? keys[keys.length - 1] : keys[0];
+    }
+
+    autoEat() {
+      const k = this.mealToAutoEat(false);
+      if (k) this.eat(k);
+    }
+
+    // ---- cooking ----
+    // A cooking recipe: meal type + zone tier + quality of the fish and herbs used.
+    mealRecipe(mealId, tier, q) {
+      const ml = this.meal(mealId), level = Math.max(ml.level, CRAFT_TIER_LEVEL[tier]);
+      const byType = (type) => NODES.find((x) => x.zone === tier && SKILLS.find((sk) => sk.id === x.skill).mat === type);
+      const mats = [];
+      if (ml.meat) mats.push({ node: MEATS[tier], q: 0, need: ml.meat, have: this.matCount(MEATS[tier].id, 0) });
+      if (ml.fish) { const n = byType('fish'); mats.push({ node: n, q, need: ml.fish, have: this.matCount(n.id, q) }); }
+      if (ml.herb) { const n = byType('herb'); mats.push({ node: n, q, need: ml.herb, have: this.matCount(n.id, q) }); }
+      const lvl = this.skillLevel('cooking'), over = Math.max(0, lvl - level);
+      const byMats = Math.min.apply(null, mats.map((m) => Math.floor(m.have / m.need)));
+      const space = Math.max(0, this.pantryCap() - this.pantryCount());
+      return {
+        meal: ml, tier, quality: q, mats, level, key: mealId + ':' + tier + ':' + q,
+        burn: Math.max(0, CONFIG.cookBurnBase - over * CONFIG.cookBurnPerLevel),
+        xp: Math.round(COOK_TIER_XP[tier] * ml.xpMult * (1 + q * 0.5)),
+        time: (3 + tier) * (1 - Math.min(0.4, over * 0.01)),
+        byMats, space, canMake: Math.min(byMats, space)
+      };
+    }
+
+    cookLock(mealId, tier) {
+      const need = Math.max(this.meal(mealId).level, CRAFT_TIER_LEVEL[tier]);
+      return this.skillLevel('cooking') < need ? 'Needs Cooking ' + need : '';
+    }
+
+    // Cook at the campfire until the ingredients run out or the pantry is full.
+    startCook(mealId, tier, q) {
+      const s = this.s;
+      if (!this.inTown() || this.cookLock(mealId, tier) || this.mealRecipe(mealId, tier, q).canMake < 1) return false;
+      s.location = 'cook';
+      s.cook = { meal: mealId, tier, quality: q };
+      this.b.cookT = 0;
+      this.emit('cookStart', { cook: s.cook, name: this.mealName(mealId + ':' + tier + ':' + q) });
+      return true;
+    }
+
+    stopCook(reason) {
+      if (this.s.location !== 'cook') return;
+      this.s.location = 'town';
+      this.emit('cookStop', { reason });
+    }
+
+    cookTick(dt) {
+      const s = this.s, b = this.b, c = s.cook;
+      if (!c) { s.location = 'town'; return; }
+      const r = this.mealRecipe(c.meal, c.tier, c.quality);
+      if (r.canMake < 1) { this.stopCook(r.byMats < 1 ? 'ingredients' : 'pantry'); return; }
+      b.cookT = (b.cookT || 0) + dt;
+      if (b.cookT < r.time) return;
+      b.cookT -= r.time;
+      this.cookOne(r);
+    }
+
+    cookOne(r) {
+      const s = this.s, before = this.skillLevel('cooking');
+      r.mats.forEach((m) => this.addMat(m.node.id, m.q, -m.need));
+      const burned = Math.random() < r.burn;
+      if (!burned) {
+        s.pantry[r.key] = (s.pantry[r.key] || 0) + 1;
+        s.stats.mealsCooked++;
+        if (s.routine.on) s.routine.count++;
       }
-      if (r.xp) r.levels = this.gainXp(r.xp);
-      this.s.gold += r.gold;
-      this.s.stats.totalGold += r.gold;
-      return r;
+      const xp = burned ? Math.round(r.xp / 2) : r.xp;   // a burned meal still teaches you something
+      this.addSkillXp('cooking', xp);
+      this.emit('cook', { key: r.key, name: this.mealName(r.key), burned, xp });
+      const after = this.skillLevel('cooking');
+      if (after > before) this.emit('skillLevel', { skill: COOKING, level: after });
+      return !burned;
+    }
+
+    // ---- routines ----
+    // A routine is a loop of steps: { act, target, until, value }.
+    //   act:    'gather' (target.node) | 'delve' (target.from: 'left' | 'deepest' | floor) | 'rest'
+    //           | 'cook' (target.meal, tier, q) | 'craft' (target.slot, tier, q)
+    //   until:  'energyBelow' | 'energyFull' | 'hpBelow' | 'hpFull' | 'pantryFull' | 'items' | 'minutes' | 'done'
+    //           ('done' = until the step can't continue: out of energy, ingredients or materials)
+    // Each tick, if the current step is finished or can't run, the routine moves to the next one.
+    routineSlots() { return Math.min(CONFIG.routineMaxSteps, CONFIG.routineBaseSteps + this.zonesCleared()); }
+
+    setRoutine(steps) {
+      const r = this.s.routine;
+      r.steps = steps.slice(0, CONFIG.routineMaxSteps);
+      if (r.idx >= r.steps.length) r.idx = 0;
+    }
+
+    startRoutine() {
+      const r = this.s.routine;
+      if (!r.steps.slice(0, this.routineSlots()).length) return false;
+      r.on = true; r.idx = 0; r.startedAt = this.clock(); r.count = 0;
+      this.emit('routineStart');
+      return true;
+    }
+
+    stopRoutine() {
+      const r = this.s.routine;
+      if (!r.on) return;
+      r.on = false;
+      this.emit('routineStop');
+    }
+
+    stepDone(st) {
+      const s = this.s, r = s.routine, d = this.stats(), e = s.energy, max = this.maxEnergy();
+      const hp = this.b.heroHp / d.maxHp, v = (st.value || 0) / 100;
+      switch (st.until) {
+        case 'energyBelow': return e.cur < v * max;
+        case 'energyFull':  return e.cur >= max - 0.01;
+        case 'hpBelow':     return hp < v;
+        case 'hpFull':      return hp >= 0.999;
+        case 'pantryFull':  return this.pantryCount() >= this.pantryCap();
+        case 'items':       return r.count >= (st.value || 1);
+        case 'minutes':     return this.clock() - r.startedAt >= (st.value || 1) * 60;
+        default:            return false;   // 'done': only ends when the step can't continue
+      }
+    }
+
+    // Can this step do anything right now?
+    stepCanRun(st) {
+      const t = st.target || {};
+      switch (st.act) {
+        case 'gather': { const n = this.node(t.node); return !!n && !this.nodeLock(n) && this.canGather(n); }
+        case 'cook':   return !this.cookLock(t.meal, t.tier) && this.mealRecipe(t.meal, t.tier, t.q).canMake > 0;
+        case 'craft':  return !this.craftLock(t.tier) && this.recipe(t.slot, t.tier, t.q).canMake > 0 && this.s.bag.length < CONFIG.bagSize;
+        default:       return true;   // delve and rest can always run
+      }
+    }
+
+    // Put the hero into this step's activity if they aren't already doing it.
+    stepEnsure(st) {
+      const s = this.s, t = st.target || {}, loc = s.location;
+      const leave = () => { if (loc === 'delve' || loc === 'gather') this.goToTown('routine'); else if (loc !== 'town') s.location = 'town'; };
+      switch (st.act) {
+        case 'gather':
+          if (loc === 'gather' && s.gatherNode === t.node) return;
+          if (loc === 'delve') this.goToTown('routine');
+          this.startGather(t.node);
+          return;
+        case 'delve': {
+          if (loc === 'delve') return;
+          if (loc !== 'town') leave();
+          // rest up first: set out once HP is nearly full
+          if (this.b.heroHp < this.stats().maxHp * 0.95) return;
+          const floor = t.from === 'deepest' ? s.runMaxFloor : t.from === 'left' || !t.from ? s.floor : +t.from;
+          this.depart(floor, true);
+          return;
+        }
+        case 'rest':
+          if (loc !== 'town') leave();
+          return;
+        case 'cook': {
+          const c = s.cook;
+          if (loc === 'cook' && c && c.meal === t.meal && c.tier === t.tier && c.quality === t.q) return;
+          leave();
+          this.startCook(t.meal, t.tier, t.q);
+          return;
+        }
+        case 'craft': {
+          const c = s.craft;
+          if (loc === 'craft' && c && c.slot === t.slot && c.tier === t.tier && c.quality === t.q) return;
+          leave();
+          this.startCraft(t.slot, t.tier, t.q);
+          return;
+        }
+      }
+    }
+
+    routineTick() {
+      const r = this.s.routine, steps = r.steps.slice(0, this.routineSlots());
+      if (!steps.length) { this.stopRoutine(); return; }
+      for (let tries = 0; tries <= steps.length; tries++) {
+        if (r.idx >= steps.length) r.idx = 0;
+        const st = steps[r.idx];
+        if (!this.stepDone(st) && this.stepCanRun(st)) { this.stepEnsure(st); return; }
+        r.idx = (r.idx + 1) % steps.length;
+        r.startedAt = this.clock();
+        r.count = 0;
+        this.emit('routineStep', { idx: r.idx });
+      }
+      // Nothing can run right now: wait in town until something can (energy regenerates there fastest).
+      if (this.s.location !== 'town') { if (this.s.location === 'delve' || this.s.location === 'gather') this.goToTown('routine'); else this.s.location = 'town'; }
+    }
+
+    // ---- offline progress ----
+    // Time away is replayed by running the game itself, in coarse steps, for a share of the time away.
+    // That way routines, energy, deaths and drops all behave exactly as if you'd watched.
+    offlinePlan(seconds) {
+      const capped = Math.min(seconds, CONFIG.offlineCapHours * 3600);
+      const share = CONFIG.offlineReplay * (this.owns('royal_charter') ? 2 : 1);
+      return { seconds: capped, simSeconds: capped * share };
+    }
+
+    snapshot() {
+      const s = this.s;
+      return {
+        gold: s.stats.totalGold, level: s.hero.level, xp: s.hero.xp, kills: s.stats.monstersSlain,
+        items: s.stats.itemsFound, crafted: s.stats.itemsCrafted, cooked: s.stats.mealsCooked,
+        floor: s.bestFloor, deaths: s.stats.deaths, materials: Object.assign({}, s.materials),
+        skills: Object.assign({}, s.skillXp)
+      };
+    }
+
+    // Replay up to simSeconds of game time. Returns seconds actually simulated (for chunking across frames).
+    replay(simSeconds) {
+      const step = CONFIG.offlineStep;
+      let t = 0;
+      while (t < simSeconds) {
+        this.update(Math.min(step, simSeconds - t));
+        t += step;
+        if (this.events.length > 500) this.events.length = 0;   // nobody is watching
+      }
+      this.events.length = 0;
+      return t;
+    }
+
+    // What changed between two snapshots, for the welcome-back screen.
+    offlineSummary(a, b) {
+      const mats = [];
+      Object.keys(b.materials).forEach((k) => {
+        const n = (b.materials[k] || 0) - (a.materials[k] || 0);
+        if (n > 0) { const parts = k.split(':'); mats.push({ key: k, q: +parts[1], name: this.matDef(parts[0]).item, count: n }); }
+      });
+      mats.sort((x, y) => y.q - x.q || y.count - x.count);
+      const skills = [];
+      SKILLS.concat([CRAFTING, COOKING]).forEach((sk) => {
+        const from = Math.min(this.levelCap(), levelFromXp(a.skills[sk.id] || 0)), to = this.skillLevel(sk.id);
+        if (to > from) skills.push({ name: sk.name, from, to });
+      });
+      return {
+        gold: b.gold - a.gold, levels: b.level - a.level, kills: b.kills - a.kills, items: b.items - a.items,
+        crafted: b.crafted - a.crafted, cooked: b.cooked - a.cooked, floors: b.floor - a.floor,
+        deaths: b.deaths - a.deaths, mats, skills
+      };
     }
 
     // ---- skins & purchases ----
@@ -1342,6 +1693,7 @@
   Object.assign(DD, {
     CONFIG, CLASSES, CLASS_LIST, SPELLS, ATTRS, FOCUS_PERK, COMPANIONS, MONSTERS, ZONES, SLOTS, RARITIES, STAT_DEFS,
     SKILLS, NODES, CRAFTING, RECIPES, QUALITY_VALUE, CRAFT_TIER_LEVEL, xpForLevel, levelFromXp,
+    MEATS, MEALS, COOKING,
     SKINS, STORE_ITEMS, xpToLevel,
     newState, hydrate, monsterAt, zoneAt, makeItem, compDpsAt, Game, fmt, fmtTime
   });

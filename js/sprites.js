@@ -473,6 +473,10 @@
       palette: { a: '#3a2414', b: '#8a5a2a', g: '#f2c230' },
       rows: ['.aaaaaa.', 'abbbbbba', 'abbbbbba', 'aaaggaaa', 'abbggbba', 'abbbbbba', 'abbbbbba', 'aaaaaaaa']
     },
+    menu_routine: {
+      palette: { a: '#8a6a3a', b: '#e8dcc0', s: '#ffd84a' },
+      rows: ['aaaaaaaa', '.abbbba.', '..abba..', '...ss...', '...ss...', '..abba..', '.assssa.', 'aaaaaaaa']
+    },
     menu_stats: {
       palette: { a: '#b6e36a', b: '#5a7a3a' },
       rows: ['........', '......a.', '....a.a.', '....a.a.', '..a.a.a.', '..a.a.a.', 'a.a.a.a.', 'bbbbbbbb']

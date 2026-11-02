@@ -371,3 +371,44 @@ table.stats td:last-child { font-size: 17px; }
   .classcard .classname, .classcard .role { justify-self: start; }
   .classcard .muted { font-size: 16px; line-height: 1.15; }
 }
+
+/* ---- energy ---- */
+.res.energy { color: #ffd84a; position: relative; }
+.res.energy small { font-size: 0.75em; color: #b8a050; }
+.bolt { display: inline-block; width: 10px; height: 14px; margin-right: 4px; background: #ffd84a; clip-path: polygon(60% 0, 0 58%, 45% 58%, 30% 100%, 100% 40%, 55% 40%); }
+.ebar { display: inline-block; width: 36px; height: 6px; background: #2a2416; border: 1px solid #000; margin-left: 4px; vertical-align: middle; }
+.ebar i { display: block; height: 100%; background: #ffd84a; }
+.ebuff { color: #ffd84a; font-weight: 400; margin-left: 2px; }
+.etext { color: #ffd84a; }
+@media (max-width: 520px) { .res.energy .ebar { display: none; } }
+
+/* ---- craft stations ---- */
+.modeswitch { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.modeswitch button {
+  font-family: var(--pixel); font-size: 19px; padding: 8px; cursor: pointer; color: var(--muted);
+  background: var(--panel-2); border: 2px solid var(--border);
+}
+.modeswitch button.active { color: #ff9a2e; border-color: #8a4a1a; background: #2e2016; }
+
+/* ---- routines ---- */
+.routine-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding: 6px 10px; background: #221a30; border: 2px solid #5a3a8a; color: var(--gem); font-size: 18px;
+}
+.routine-bar b { color: var(--text); font-weight: 400; }
+.card.step { gap: 6px; }
+.card.step.current { border-color: var(--gem); box-shadow: inset 4px 0 0 var(--gem); }
+.card.step.overflow { opacity: 0.5; }
+.step-head, .step-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.step-n { font-family: var(--num); font-size: 22px; color: var(--gem); min-width: 18px; }
+.step-tools { margin-left: auto; display: flex; gap: 4px; }
+.step-tools .btn { padding: 4px 8px; }
+.card.step select, .stepval {
+  font-family: var(--body); font-size: 17px; background: var(--panel); color: var(--text);
+  border: 2px solid var(--border); padding: 3px 6px; max-width: 100%; min-width: 0;
+}
+.stepval { width: 56px; }
+
+/* ---- welcome-back summary ---- */
+.summary { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; font-size: 19px; }
+.summary .big { margin: 4px 0; }

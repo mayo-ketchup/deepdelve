@@ -25,6 +25,11 @@
     <div class="resources">
       <span class="res gold" title="Gold"><i class="coin"></i>{{ fmt(state.gold) }}</span>
       <span class="res gems" title="Soul Gems"><i class="gem"></i>{{ fmt(state.gems) }}</span>
+      <span class="res energy" :title="'Energy for gathering. Regenerates over time, faster resting in town.' + (energy.regen ? ' Regen boosted for ' + fmtTime(energy.regenLeft) + '.' : '') + (energy.feast ? ' Feast bonus for ' + fmtTime(energy.feastLeft) + '.' : '')">
+        <i class="bolt"></i>{{ Math.floor(energy.cur) }}<small>/{{ Math.floor(energy.max) }}</small>
+        <span class="ebar"><i :style="{width: (energy.frac * 100) + '%'}"></i></span>
+        <b v-if="energy.regen || energy.feast" class="ebuff">{{ energy.feast ? '★' : '↻' }}</b>
+      </span>
     </div>
   </header>
 
@@ -34,7 +39,22 @@
         <canvas ref="canvas" width="320" height="180" @pointerdown.prevent="tap" aria-label="Battle view. Click to strike."></canvas>
         <canvas ref="overlay" class="overlay" aria-hidden="true"></canvas>
       </div>
-      <div v-if="crafting" class="stage-bar">
+      <div v-if="state.routine.on" class="routine-bar">
+        <span>⟳ Routine · step {{ state.routine.idx + 1 }}/{{ Math.min(state.routine.steps.length, routineSlots) }}:
+          <b>{{ stepLabel(state.routine.idx) }}</b></span>
+        <button class="btn tiny-text" @click="toggleRoutine">Stop routine</button>
+      </div>
+      <div v-if="cooking" class="stage-bar">
+        <div class="floor-info">
+          <strong>The Campfire</strong>
+          <span class="zone forge">Cooking {{ skillProgress('cooking').level }}</span>
+          <span class="muted">{{ mealRecipe.canMake }} more can be cooked · pantry {{ pantryInfo.count }}/{{ pantryInfo.cap }}</span>
+        </div>
+        <div class="row">
+          <button class="btn" @click="stopCook">Stop cooking</button>
+        </div>
+      </div>
+      <div v-else-if="crafting" class="stage-bar">
         <div class="floor-info">
           <strong>The Forge</strong>
           <span class="zone forge">Crafting {{ skillProgress('crafting').level }}</span>
@@ -228,17 +248,90 @@
           <div class="card-main">
             <div class="card-title">{{ n.name }} <span class="lvl">Lv {{ n.level }} · {{ ZONES[n.zone].name }}</span></div>
             <div v-if="nodeLock(n)" class="warn small">🔒 {{ nodeLock(n) }}</div>
-            <div v-else class="effect">{{ n.item }} · {{ gatherTime(n).toFixed(1) }}s · {{ n.xp }} XP</div>
+            <div v-else class="effect">{{ n.item }} · {{ gatherTime(n).toFixed(1) }}s · {{ n.xp }} XP · <span class="etext">{{ energyCost(n) }} energy</span></div>
             <div class="qcounts"><span v-for="(c, q) in matCounts(n.id)" :key="q" :style="{color: c ? RARITIES[q].color : null}" :class="{zero: !c}" :title="RARITIES[q].name">{{ fmt(c) }}</span></div>
           </div>
           <button v-if="gathering && state.gatherNode===n.id" class="btn" disabled>Gathering</button>
           <button v-else-if="nodeLock(n)" class="btn btn-locked" disabled :title="nodeLock(n)">🔒 Locked</button>
           <button v-else class="btn btn-gold" :disabled="state.location==='delve'" @click="startGather(n)">Gather</button>
         </div>
-        <p class="muted small">Gathering is safe, heals you slowly and keeps going while you're away. Better quality materials craft better gear in the Craft tab. Spares sell to the merchant.</p>
+        <p class="muted small">Gathering is safe and heals you slowly, but uses energy. Eat meals from your pantry (Craft → Campfire) to keep going, or build a Routine. Better quality materials craft better gear in the Craft tab. Spares sell to the merchant.</p>
       </div>
 
       <div v-if="tab==='craft'" class="list">
+        <div class="modeswitch" role="group" aria-label="Craft station">
+          <button :class="{active: craftMode==='forge'}" @click="craftMode='forge'">🔨 Forge</button>
+          <button :class="{active: craftMode==='campfire'}" @click="craftMode='campfire'">🔥 Campfire</button>
+        </div>
+        <template v-if="craftMode==='campfire'">
+          <div class="card column">
+            <div class="card-title">Cooking <span class="lvl">Lv {{ skillProgress('cooking').level }}/{{ levelCap }}</span></div>
+            <div class="xpbar forgebar"><i :style="{width: (skillProgress('cooking').frac * 100) + '%'}"></i></div>
+            <div class="muted small">
+              <template v-if="skillProgress('cooking').need">{{ fmt(skillProgress('cooking').into) }} / {{ fmt(skillProgress('cooking').need) }} XP to next level · </template>
+              Meals restore energy. Meat drops from monsters while you delve.
+            </div>
+          </div>
+          <p v-if="nextCapGuardian" class="capnote">Life skills are capped at <b>level {{ levelCap }}</b>. Defeat <b>{{ nextCapGuardian.name }}</b> on floor {{ nextCapGuardian.floor }} to raise the cap to {{ nextCapGuardian.cap }}.</p>
+          <p v-if="state.location==='delve' || gathering" class="notice">The campfire is in Hearthstead. Return to town to cook.</p>
+
+          <div class="pickrow" role="group" aria-label="Meal">
+            <span class="muted">Meal</span>
+            <button v-for="ml in MEALS" :key="ml.id" :class="{active: cookMeal===ml.id, locked: cookLock(ml.id, 0)}" :title="cookLock(ml.id, 0) || ml.name" @click="cookMeal=ml.id">{{ ml.name.replace('Slow-cooked ', '') }}</button>
+          </div>
+          <div class="pickrow" role="group" aria-label="Tier">
+            <span class="muted">Tier</span>
+            <button v-for="(z, i) in ZONES" :key="z.id" :class="{active: cookTier===i, locked: cookLock(cookMeal, i)}" :title="cookLock(cookMeal, i) || z.name" @click="cookTier=i">{{ z.name.replace('The ', '').split(' ')[0] }}</button>
+          </div>
+          <div class="pickrow" role="group" aria-label="Quality">
+            <span class="muted">Quality</span>
+            <button v-for="(r, q) in RARITIES" :key="r.id" :class="{active: cookQuality===q}" :style="{color: r.color}" @click="cookQuality=q">{{ r.name }}</button>
+          </div>
+
+          <div class="card column recipe" :style="{borderColor: RARITIES[cookQuality].color}">
+            <div class="item-name" :style="{color: RARITIES[cookQuality].color}">{{ mealName(mealRecipe.key) }}</div>
+            <div class="effect">{{ mealText(mealEffect(mealRecipe.key)) }}</div>
+            <div class="muted small">{{ mealRecipe.time.toFixed(1) }}s each · {{ mealRecipe.xp }} XP · <span :class="{warn: mealRecipe.burn > 0.15}">{{ Math.round(mealRecipe.burn * 100) }}% burn chance</span></div>
+            <div v-for="m in mealRecipe.mats" :key="m.node.id" class="matneed" :class="{short: m.have < m.need}">
+              <span :style="{color: m.q ? RARITIES[m.q].color : null}">{{ m.q ? RARITIES[m.q].name + ' ' : '' }}{{ m.node.item }}</span>
+              <b>{{ fmt(m.have) }} / {{ m.need }}</b>
+            </div>
+            <div class="row">
+              <button class="btn btn-gold" :disabled="!!cookLock(cookMeal, cookTier) || mealRecipe.canMake < 1 || state.location==='delve' || gathering || cooking" @click="startCook">
+                {{ cookLock(cookMeal, cookTier) || (cooking ? 'Cooking…' : mealRecipe.canMake ? 'Cook (' + mealRecipe.canMake + ' possible)' : mealRecipe.byMats ? 'The pantry is full' : 'Not enough ingredients') }}
+              </button>
+            </div>
+          </div>
+
+          <div class="bag-head">
+            <span class="card-title">Pantry {{ pantryInfo.count }}/{{ pantryInfo.cap }}</span>
+            <label class="muted autosalvage">Auto-eat below
+              <select v-model.number="state.settings.autoEat">
+                <option :value="0">Never</option>
+                <option :value="0.1">10%</option>
+                <option :value="0.15">15%</option>
+                <option :value="0.25">25%</option>
+                <option :value="0.5">50%</option>
+              </select>
+            </label>
+            <label class="muted autosalvage">
+              <select v-model="state.settings.eatOrder">
+                <option value="small">Small meals first</option>
+                <option value="big">Big meals first</option>
+              </select>
+            </label>
+          </div>
+          <p v-if="!pantry.length" class="muted">Cooked meals are stored here. Your hero eats them while gathering when energy runs low. Slow-cooked Roasts are only eaten by hand.</p>
+          <div v-for="p in pantry" :key="p.key" class="card matrow">
+            <div class="card-main">
+              <div class="item-name" :style="{color: p.effect.quality ? RARITIES[p.effect.quality].color : null}">{{ p.name }} <span class="lvl">x{{ p.count }}</span></div>
+              <div class="muted small">{{ mealText(p.effect) }}</div>
+            </div>
+            <button class="btn btn-dim" @click="eatMeal(p.key)">Eat</button>
+          </div>
+        </template>
+
+        <template v-else>
         <div class="card column">
           <div class="card-title">Crafting <span class="lvl">Lv {{ skillProgress('crafting').level }}/{{ levelCap }}</span></div>
           <div class="xpbar forgebar"><i :style="{width: (skillProgress('crafting').frac * 100) + '%'}"></i></div>
@@ -296,6 +389,76 @@
             <button v-for="q in [0, 1, 2, 3]" :key="q" class="btn tiny-text" :disabled="!inTown || !!refineLock(n, q) || matCounts(n.id)[q] < CONFIG.refineRatio" :title="refineLock(n, q)" :style="{color: RARITIES[q + 1].color}" @click="refine(n, q)"><template v-if="refineLock(n, q)">🔒 </template>→ {{ RARITIES[q + 1].name }}</button>
           </div>
         </div>
+        </template>
+      </div>
+
+      <div v-if="tab==='routine'" class="list">
+        <div class="card column">
+          <div class="card-title">Your routine <span class="lvl">{{ Math.min(state.routine.steps.length, routineSlots) }}/{{ routineSlots }} steps</span></div>
+          <p class="muted">Your hero follows these steps in order and starts again from the top. A step that can't run right now is skipped. Routines keep going while you're away.</p>
+          <div class="row">
+            <button class="btn" :class="state.routine.on ? 'btn-danger' : 'btn-gold'" @click="toggleRoutine">{{ state.routine.on ? 'Stop routine' : 'Start routine' }}</button>
+          </div>
+        </div>
+        <p v-if="routineNextUnlock" class="capnote">Defeat <b>{{ routineNextUnlock.name }}</b> on floor {{ routineNextUnlock.floor }} to unlock another step.</p>
+
+        <div v-for="(st, i) in state.routine.steps" :key="i" class="card column step" :class="{current: state.routine.on && state.routine.idx === i, overflow: i >= routineSlots}">
+          <div class="step-head">
+            <span class="step-n">{{ i + 1 }}</span>
+            <select :value="st.act" @change="setStepAct(st, $event.target.value)" aria-label="Activity">
+              <option v-for="a in ACTS" :key="a[0]" :value="a[0]">{{ a[1] }}</option>
+            </select>
+            <span class="step-tools">
+              <button class="btn tiny-text" :disabled="i === 0" @click="moveStep(i, -1)" title="Move up">↑</button>
+              <button class="btn tiny-text" :disabled="i === state.routine.steps.length - 1" @click="moveStep(i, 1)" title="Move down">↓</button>
+              <button class="btn tiny-text" @click="removeStep(i)" title="Remove step">✕</button>
+            </span>
+          </div>
+          <div class="step-row">
+            <template v-if="st.act==='gather'">
+              <select v-model="st.target.node" aria-label="Resource">
+                <option v-for="o in gatherOptions" :key="o.id" :value="o.id">{{ o.label }}</option>
+              </select>
+            </template>
+            <template v-else-if="st.act==='delve'">
+              <select v-model="st.target.from" aria-label="Start floor">
+                <option value="left">from where you left off</option>
+                <option value="deepest">from your deepest floor</option>
+                <option v-for="o in departOptions.filter(o => o.label === 'Checkpoint')" :key="o.floor" :value="String(o.floor)">from floor {{ o.floor }}</option>
+              </select>
+            </template>
+            <template v-else-if="st.act==='cook'">
+              <select v-model="st.target.meal" aria-label="Meal"><option v-for="ml in MEALS" :key="ml.id" :value="ml.id">{{ ml.name }}</option></select>
+              <select v-model.number="st.target.tier" aria-label="Tier"><option v-for="(z, zi) in ZONES" :key="z.id" :value="zi">{{ z.name }}</option></select>
+              <select v-model.number="st.target.q" aria-label="Quality"><option v-for="(r, q) in RARITIES" :key="r.id" :value="q">{{ r.name }}</option></select>
+            </template>
+            <template v-else-if="st.act==='craft'">
+              <select v-model="st.target.slot" aria-label="Piece"><option v-for="sl in SLOTS" :key="sl.id" :value="sl.id">{{ sl.name }}</option></select>
+              <select v-model.number="st.target.tier" aria-label="Tier"><option v-for="(z, zi) in ZONES" :key="z.id" :value="zi">{{ z.name }}</option></select>
+              <select v-model.number="st.target.q" aria-label="Quality"><option v-for="(r, q) in RARITIES" :key="r.id" :value="q">{{ r.name }}</option></select>
+            </template>
+          </div>
+          <div class="step-row">
+            <span class="muted">until</span>
+            <select :value="st.until" @change="setStepUntil(st, $event.target.value)" aria-label="Until">
+              <option v-for="u in UNTIL[st.act]" :key="u[0]" :value="u[0]">{{ u[1].replace(' %', '').replace('N ', '') }}</option>
+            </select>
+            <input v-if="untilNeedsValue(st.until)" v-model.number="st.value" type="number" min="1" :max="st.until.indexOf('Below') !== -1 ? 99 : 9999" class="stepval" aria-label="Amount">
+            <span v-if="st.until.indexOf('Below') !== -1" class="muted">%</span>
+            <span v-else-if="st.until==='minutes'" class="muted">min</span>
+            <span v-else-if="st.until==='items'" class="muted">{{ st.act === 'cook' ? 'meals' : 'items' }}</span>
+          </div>
+          <p v-if="i >= routineSlots" class="warn small">This step is locked and will be skipped.</p>
+        </div>
+
+        <div class="row">
+          <button class="btn" :disabled="state.routine.steps.length >= routineSlots" @click="addStep">+ Add step</button>
+        </div>
+        <div class="bag-head"><span class="card-title">Start from a template</span></div>
+        <div class="row">
+          <button v-for="tp in TEMPLATES" :key="tp.id" class="btn btn-dim" @click="applyTemplate(tp)">{{ tp.name }}</button>
+        </div>
+        <p class="muted small">Tip: pair a Gather step ("until energy drops below 10%") with a Delve step ("until energy is full"). Delving fills your pantry with meat while energy comes back.</p>
       </div>
 
       <div v-if="tab==='gear'" class="list">
@@ -384,17 +547,18 @@
         </div>
       </div>
 
-      <div v-if="tab==='skins'" class="list skins">
-        <div v-for="sk in SKINS" :key="sk.id" class="skin" :class="{equipped: state.skin===sk.id, locked: !ownsSkin(sk.id)}">
-          <img :src="skinPreview(sk.id)" :alt="sk.name" width="64" height="64">
-          <div class="skin-name">{{ sk.name }}</div>
-          <button v-if="state.skin===sk.id" class="btn" disabled>Equipped</button>
-          <button v-else-if="ownsSkin(sk.id)" class="btn" @click="equip(sk.id)">Equip</button>
-          <div v-else class="muted small">🔒 {{ sk.note }}</div>
-        </div>
-      </div>
-
       <div v-if="tab==='store'" class="list">
+        <div class="bag-head"><span class="card-title">Skins</span></div>
+        <div class="skins">
+          <div v-for="sk in SKINS" :key="sk.id" class="skin" :class="{equipped: state.skin===sk.id, locked: !ownsSkin(sk.id)}">
+            <img :src="skinPreview(sk.id)" :alt="sk.name" width="64" height="64">
+            <div class="skin-name">{{ sk.name }}</div>
+            <button v-if="state.skin===sk.id" class="btn" disabled>Equipped</button>
+            <button v-else-if="ownsSkin(sk.id)" class="btn" @click="equip(sk.id)">Equip</button>
+            <div v-else class="muted small">🔒 {{ sk.note }}</div>
+          </div>
+        </div>
+        <div class="bag-head"><span class="card-title">Support the game</span></div>
         <p class="muted">Support the game and get extra goodies. <span v-if="!dev">Opening soon.</span><span v-else class="devtag">DEV MODE: purchases are granted for free</span></p>
         <div v-for="item in STORE_ITEMS" :key="item.sku" class="card">
           <div class="card-main">
@@ -417,6 +581,8 @@
             <tr><td>Zone guardians slain</td><td>{{ fmt(state.stats.guardiansSlain) }}</td></tr>
             <tr><td>Items found</td><td>{{ fmt(state.stats.itemsFound) }}</td></tr>
             <tr><td>Items crafted</td><td>{{ fmt(state.stats.itemsCrafted) }}</td></tr>
+            <tr><td>Meals cooked</td><td>{{ fmt(state.stats.mealsCooked) }}</td></tr>
+            <tr><td>Meals eaten</td><td>{{ fmt(state.stats.mealsEaten) }}</td></tr>
             <tr><td>Total gold earned</td><td>{{ fmt(state.stats.totalGold) }}</td></tr>
             <tr><td>Deaths</td><td>{{ fmt(state.stats.deaths) }}</td></tr>
             <tr><td>Heroes retired</td><td>{{ state.stats.prestiges }}</td></tr>
@@ -458,21 +624,19 @@
     <div class="modal" :class="{wide: modal.type==='prestige'}">
       <template v-if="modal.type==='offline'">
         <h2>Welcome back!</h2>
-        <template v-if="modal.crafted">
-          <p>Your hero kept working the forge for <b>{{ fmtTime(modal.seconds) }}</b> while you were away.</p>
-          <p class="big">{{ modal.crafted.length }} item{{ modal.crafted.length === 1 ? '' : 's' }} crafted</p>
-          <p v-for="it in modal.crafted.slice(0, 6)" :key="it.id" :style="{color: RARITIES[it.rarity].color}">{{ it.name }}</p>
-        </template>
-        <template v-else-if="modal.gathered">
-          <p>Your hero kept gathering for <b>{{ fmtTime(modal.seconds) }}</b> while you were away.</p>
-          <p v-for="(c, q) in modal.gathered.got" v-show="c" :key="q" class="big" :style="{color: RARITIES[q].color}">+{{ fmt(c) }} {{ q ? RARITIES[q].name + ' ' : '' }}{{ modal.gathered.item }}</p>
-          <p class="skilltext">+{{ fmt(modal.gathered.xp) }} XP</p>
-        </template>
-        <template v-else>
-          <p>Your hero kept delving for <b>{{ fmtTime(modal.seconds) }}</b> while you were away.</p>
-          <p class="big gold"><i class="coin"></i>+{{ fmt(modal.gold) }}</p>
-          <p v-if="modal.xp" class="skilltext">+{{ fmt(modal.xp) }} XP<template v-if="modal.levels"> · {{ modal.levels }} level{{ modal.levels === 1 ? '' : 's' }} gained</template></p>
-        </template>
+        <p>Your hero kept busy for <b>{{ fmtTime(modal.seconds) }}</b> while you were away.</p>
+        <div class="summary">
+          <div v-if="modal.sum.gold >= 1" class="big gold"><i class="coin"></i>+{{ fmt(modal.sum.gold) }}</div>
+          <div v-if="modal.sum.levels" class="skilltext">+{{ modal.sum.levels }} hero level{{ modal.sum.levels === 1 ? '' : 's' }}</div>
+          <div v-if="modal.sum.kills">{{ fmt(modal.sum.kills) }} monsters slain<template v-if="modal.sum.floors"> · {{ modal.sum.floors }} new floor{{ modal.sum.floors === 1 ? '' : 's' }}</template></div>
+          <div v-for="m in modal.sum.mats.slice(0, 6)" :key="m.key" :style="{color: m.q ? RARITIES[m.q].color : null}">+{{ fmt(m.count) }} {{ m.q ? RARITIES[m.q].name + ' ' : '' }}{{ m.name }}</div>
+          <div v-if="modal.sum.mats.length > 6" class="muted">and {{ modal.sum.mats.length - 6 }} more materials</div>
+          <div v-if="modal.sum.crafted">{{ modal.sum.crafted }} item{{ modal.sum.crafted === 1 ? '' : 's' }} crafted</div>
+          <div v-if="modal.sum.cooked">{{ modal.sum.cooked }} meal{{ modal.sum.cooked === 1 ? '' : 's' }} cooked</div>
+          <div v-if="modal.sum.items">{{ modal.sum.items }} item{{ modal.sum.items === 1 ? '' : 's' }} found</div>
+          <div v-for="sk in modal.sum.skills" :key="sk.name" class="skilltext">{{ sk.name }} {{ sk.from }} → {{ sk.to }}</div>
+          <div v-if="modal.sum.deaths" class="warn">Your hero fell {{ modal.sum.deaths }} time{{ modal.sum.deaths === 1 ? '' : 's' }}</div>
+        </div>
         <p v-if="modal.capped" class="muted small">Offline time is capped at {{ CONFIG.offlineCapHours }} hours.</p>
         <button class="btn btn-gold" @click="modal=null">Collect</button>
       </template>

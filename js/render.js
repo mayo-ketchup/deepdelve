@@ -621,6 +621,29 @@
           this.float('+' + DD.fmt(e.xp) + ' XP', spot.x, spot.y - 22, '#b6e36a', 1.3, 8);
           break;
         }
+        case 'meat': {
+          const r = this.monRect(e.monster);
+          this.float('+' + e.count + ' ' + e.meat.item, r.cx, r.top - 46, '#d89a6a', 1.2, 7);
+          break;
+        }
+        case 'eat':
+          this.float(e.energy ? '+' + e.energy + ' energy' : e.effect.regen ? 'Energy regen x' + e.effect.regen : 'Ate ' + e.name, W / 2, 40, '#ffd84a', 1.4, 9);
+          break;
+        case 'tired':
+          this.setBanner('OUT OF ENERGY', 'Rest, eat, or let it regenerate', '#ffd84a');
+          break;
+        case 'cookStart':
+          this.clearFx();
+          this.setBanner('THE CAMPFIRE', 'Cooking ' + e.name, '#ff9a2e');
+          break;
+        case 'cook':
+          if (e.burned) this.float('Burned!', TOWN.fireX, 96, '#ff5a5a', 1.4, 9);
+          else this.float('+1 ' + e.name, TOWN.fireX, 96, '#ffd84a', 1.6, 8);
+          this.float('+' + e.xp + ' XP', TOWN.fireX, 108, '#b6e36a', 1.3, 8);
+          break;
+        case 'routineStart':
+          this.setBanner('ROUTINE STARTED', 'Your hero will follow the plan', '#c99bff');
+          break;
         case 'craftStart':
           this.clearFx();
           this.setBanner('THE FORGE', 'Crafting ' + DD.RARITIES[e.craft.quality].name + ' ' + e.craft.slot, '#ff9a2e');
@@ -666,13 +689,14 @@
         this.drawBanner(dt);
         return;
       }
-      if (s.location === 'town' || s.location === 'craft') {
+      if (s.location === 'town' || s.location === 'craft' || s.location === 'cook') {
         this.drawTown(dt, time);
         if (s.location === 'craft') this.drawForge(dt, time);
+        if (s.location === 'cook') this.drawCooking(dt, time);
         this.drawParticles(dt, time);
         this.drawFx(dt);
         this.drawFloaters(dt);
-        if (s.location === 'craft') this.drawForgeHud(); else this.drawTownHud();
+        if (s.location === 'craft') this.drawForgeHud(); else if (s.location === 'cook') this.drawCookHud(); else this.drawTownHud();
         this.drawBanner(dt);
         return;
       }
@@ -734,7 +758,7 @@
       text(g, 'MERCHANT', (TOWN.stallL + TOWN.stallR) / 2, 76, '#ffcf6a', 8, 'center');
 
       // the hero resting by the fire
-      if (s.location === 'craft') return;   // the hero is at the anvil instead (drawForge)
+      if (s.location === 'craft' || s.location === 'cook') return;   // the hero is at the anvil or the pot instead
       const resting = b.heroHp < d.maxHp;
       const spr = DD.Sprites.get(s.cls || 'knight', { skin: s.skin });
       const y = GROUND - 48 + (resting ? 2 : Math.round(Math.sin(time * 2)));
@@ -850,6 +874,7 @@
       const sk = DD.SKILLS.find((x) => x.id === n.skill), pr = this.game.skillProgress(n.skill);
       text(g, sk.name.toUpperCase() + ' ' + pr.level, 6, 6, '#b6e36a');
       text(g, n.name, W - 6, 6, '#e8e2d0', 8, 'right');
+      this.drawEnergy(W - 76, 20);
       bar(g, 6, H - 7, W - 12, 2, pr.frac, '#b6e36a');
     }
 
@@ -888,11 +913,58 @@
       bar(g, 6, H - 7, W - 12, 2, pr.frac, '#ff9a2e');
     }
 
+    // A small energy bar: lightning glyph, bar, number.
+    drawEnergy(x, y) {
+      const g = this.g, e = this.game.s.energy, max = this.game.maxEnergy();
+      text(g, '⚡', x - 2, y - 2, '#ffd84a', 7);
+      bar(g, x + 8, y + 1, 40, 3, e.cur / max, '#ffd84a');
+      text(g, Math.floor(e.cur) + '', x + 52, y - 2, '#ffd84a', 7);
+    }
+
+    // The hero stirring a pot over the campfire.
+    drawCooking(dt, time) {
+      const g = this.g, s = this.game.s, b = this.game.b, c = s.cook;
+      if (!c) return;
+      const fx = TOWN.fireX;
+      // tripod and pot over the fire
+      g.fillStyle = '#3a2a1e'; g.fillRect(fx - 14, 112, 2, 36); g.fillRect(fx + 12, 112, 2, 36); g.fillRect(fx - 14, 112, 28, 2);
+      g.fillStyle = '#6a6470'; g.fillRect(fx, 114, 1, 8);
+      g.fillStyle = '#26242c'; g.fillRect(fx - 9, 122, 18, 12); g.fillRect(fx - 7, 134, 14, 2);
+      g.fillStyle = '#4a4852'; g.fillRect(fx - 10, 121, 20, 2);
+      g.fillStyle = '#c8783a'; g.fillRect(fx - 8, 122, 16, 2);          // the stew
+      // steam
+      for (let i = 0; i < 4; i++) {
+        const cyc = (time * 0.5 + i / 4) % 1;
+        g.globalAlpha = 0.5 * (1 - cyc);
+        g.fillStyle = '#e8e8f0';
+        g.fillRect(Math.round(fx - 4 + i * 3 + Math.sin(time * 2 + i) * 3), Math.round(118 - cyc * 30), 2, 2);
+      }
+      g.globalAlpha = 1;
+      // the hero stirs with a ladle
+      const ph = (time % 1.1) / 1.1, hx = fx - 54 + (ph < 0.3 ? Math.round(Math.sin(ph / 0.3 * Math.PI) * 4) : 0);
+      const spr = DD.Sprites.get(s.cls || 'knight', { skin: s.skin });
+      g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(hx + 10, GROUND - 2, 28, 3);
+      g.drawImage(spr, hx, GROUND - 48, 48, 48);
+      g.fillStyle = '#8a5a1a'; g.fillRect(hx + 40, 116 + Math.round(Math.sin(time * 4) * 2), 14, 2);
+      const r = this.game.mealRecipe(c.meal, c.tier, c.quality);
+      bar(g, fx - 22, 104, 44, 3, (b.cookT || 0) / r.time, DD.RARITIES[c.quality].color);
+    }
+
+    drawCookHud() {
+      const g = this.g, s = this.game.s, c = s.cook;
+      if (!c) return;
+      const pr = this.game.skillProgress('cooking'), r = this.game.mealRecipe(c.meal, c.tier, c.quality);
+      text(g, 'COOKING ' + pr.level, 6, 6, '#ff9a2e');
+      text(g, r.meal.name + ' · ' + r.canMake + ' left · ' + Math.round(r.burn * 100) + '% burn', W - 6, 6, '#ffd84a', 8, 'right');
+      bar(g, 6, H - 7, W - 12, 2, pr.frac, '#ff9a2e');
+    }
+
     drawTownHud() {
       const g = this.g, b = this.game.b, d = this.game.stats();
       text(g, 'HEARTHSTEAD', 6, 6, '#ffcf6a');
       const frac = b.heroHp / d.maxHp;
       text(g, frac >= 1 ? 'RESTED' : 'RESTING ' + Math.floor(frac * 100) + '%', W - 6, 6, frac >= 1 ? '#4cd964' : '#cfe3ff', 8, 'right');
+      this.drawEnergy(W - 76, 20);
     }
 
     drawTorches(time) {

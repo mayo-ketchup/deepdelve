@@ -29,12 +29,12 @@
     { id: 'upgrades',   label: 'Hero',     icon: 'menu_hero',     hint: 'Level up and assign stat points' },
     { id: 'gear',       label: 'Gear',     icon: 'menu_gear',     hint: 'Equip and sell in town' },
     { id: 'skills',     label: 'Skills',   icon: 'menu_skills',   hint: 'Gather materials' },
-    { id: 'craft',      label: 'Craft',    icon: 'menu_craft',    hint: 'Forge gear from materials' },
+    { id: 'craft',      label: 'Craft',    icon: 'menu_craft',    hint: 'Forge gear and cook meals' },
     { id: 'merchant',   label: 'Merchant', icon: 'menu_merchant', hint: 'Buy gear, sell materials' },
     { id: 'companions', label: 'Allies',   icon: 'menu_allies',   hint: 'Hire fighters' },
     { id: 'prestige',   label: 'Retire',   icon: 'menu_retire',   hint: 'Trade a run for Soul Gems' },
-    { id: 'skins',      label: 'Skins',    icon: 'menu_skins',    hint: 'Change your look' },
-    { id: 'store',      label: 'Store',    icon: 'menu_store',    hint: 'Support the game' },
+    { id: 'routine',    label: 'Routine',  icon: 'menu_routine',  hint: 'Automate gathering, delving and cooking' },
+    { id: 'store',      label: 'Store',    icon: 'menu_store',    hint: 'Skins and support the game' },
     { id: 'settings',   label: 'Stats',    icon: 'menu_stats',    hint: 'Records and saving' }
   ];
 
@@ -111,7 +111,7 @@
       const matCounts = (nodeId) => { void state.materials; return DD.RARITIES.map((r, q) => state.materials[nodeId + ':' + q] || 0); };
       const materials = computed(() => Object.keys(state.materials).filter((k) => state.materials[k] > 0).map((k) => {
         const parts = k.split(':');
-        return { key: k, node: game.node(parts[0]), q: +parts[1], count: state.materials[k], value: game.materialValue(k) };
+        return { key: k, node: game.matDef(parts[0]), q: +parts[1], count: state.materials[k], value: game.materialValue(k) };
       }).sort((a, b) => (a.node.zone - b.node.zone) || a.node.skill.localeCompare(b.node.skill) || (a.q - b.q)));
       const commonValue = computed(() => materials.value.filter((m) => m.q === 0).reduce((t, m) => t + m.count * m.value, 0));
       function startGather(n) {
@@ -128,6 +128,88 @@
 
       // ---- crafting ----
       const crafting = computed(() => state.location === 'craft');
+      // ---- energy (refreshed by the loop a few times a second) ----
+      const energy = ref({ cur: 0, max: 1, frac: 0, regen: false, feast: false });
+      function refreshEnergy() {
+        const e = state.energy, max = game.maxEnergy(), now = game.clock();
+        energy.value = { cur: e.cur, max, frac: Math.min(1, e.cur / max), regen: e.regenUntil > now, feast: e.feastUntil > now,
+          regenLeft: Math.max(0, e.regenUntil - now), feastLeft: Math.max(0, e.feastUntil - now) };
+      }
+      const energyCost = (n) => game.energyCost(n);
+
+      // ---- cooking & pantry ----
+      const craftMode = ref('forge');   // the Craft screen: 'forge' or 'campfire'
+      const cooking = computed(() => state.location === 'cook');
+      const cookMeal = ref('ration');
+      const cookTier = ref(0);
+      const cookQuality = ref(0);
+      const mealRecipe = computed(() => {
+        void state.materials; void state.pantry; void state.skillXp.cooking; void state.bestFloor;
+        return game.mealRecipe(cookMeal.value, cookTier.value, cookQuality.value);
+      });
+      const cookLock = (mealId, tier) => { void state.skillXp.cooking; void state.bestFloor; return game.cookLock(mealId, tier); };
+      const mealEffect = (key) => game.mealEffect(key);
+      const mealName = (key) => game.mealName(key);
+      const pantry = computed(() => Object.keys(state.pantry).filter((k) => state.pantry[k] > 0).map((k) => ({ key: k, count: state.pantry[k], name: game.mealName(k), effect: game.mealEffect(k) }))
+        .sort((a, b) => a.effect.tier - b.effect.tier || MEAL_ORDER[a.effect.meal.id] - MEAL_ORDER[b.effect.meal.id] || a.effect.quality - b.effect.quality));
+      const pantryInfo = computed(() => { void state.pantry; void state.skillXp.cooking; void state.bestFloor; return { count: game.pantryCount(), cap: game.pantryCap() }; });
+      function startCook() {
+        if (state.location === 'delve' || state.location === 'gather') { toast('Return to town to use the campfire.', 'bad'); return; }
+        if (game.startCook(cookMeal.value, cookTier.value, cookQuality.value)) save();
+      }
+      const stopCook = () => game.stopCook('manual');
+      function eatMeal(key) { if (game.eat(key)) refreshEnergy(); }
+      const mealText = (eff) => eff.energy && eff.maxBonus ? '+' + eff.energy + ' energy, +' + eff.maxBonus + ' max for ' + Math.round(eff.duration / 60) + ' min'
+        : eff.energy ? '+' + eff.energy + ' energy'
+        : 'x' + eff.regen + ' energy regen for ' + Math.round(eff.duration / 60) + ' min';
+
+      // ---- routines ----
+      const routineSlots = computed(() => { void state.bestFloor; return game.routineSlots(); });
+      const routineNextUnlock = computed(() => { void state.bestFloor; return game.routineSlots() < DD.CONFIG.routineMaxSteps ? game.nextCapGuardian() : null; });
+      const UNTIL = {
+        gather: [['energyBelow', 'energy drops below %'], ['done', 'out of energy and food'], ['items', 'N items gathered'], ['minutes', 'N minutes pass']],
+        delve:  [['energyFull', 'energy is full'], ['hpBelow', 'HP drops below %'], ['minutes', 'N minutes pass']],
+        rest:   [['energyFull', 'energy is full'], ['hpFull', 'HP is full'], ['minutes', 'N minutes pass']],
+        cook:   [['done', 'out of ingredients'], ['pantryFull', 'the pantry is full'], ['items', 'N meals cooked'], ['minutes', 'N minutes pass']],
+        craft:  [['done', 'out of materials or gold'], ['items', 'N items crafted'], ['minutes', 'N minutes pass']]
+      };
+      const ACTS = [['gather', 'Gather'], ['delve', 'Delve'], ['rest', 'Rest in town'], ['cook', 'Cook'], ['craft', 'Craft']];
+      const untilNeedsValue = (u) => ['energyBelow', 'hpBelow', 'items', 'minutes'].indexOf(u) !== -1;
+      function defaultStep(act) {
+        const firstNode = DD.NODES.find((n) => !game.nodeLock(n)) || DD.NODES[0];
+        const t = act === 'gather' ? { node: firstNode.id } : act === 'delve' ? { from: 'left' }
+          : act === 'cook' ? { meal: 'ration', tier: 0, q: 0 } : act === 'craft' ? { slot: 'weapon', tier: 0, q: 0 } : {};
+        const u = UNTIL[act][0][0];
+        return { act, target: t, until: u, value: u === 'energyBelow' ? 10 : u === 'hpBelow' ? 25 : u === 'items' ? 20 : u === 'minutes' ? 10 : 0 };
+      }
+      function setStepAct(st, act) { Object.assign(st, defaultStep(act)); }
+      function stepLabel(i) { const st = state.routine.steps[i], a = st && ACTS.find((x) => x[0] === st.act); return a ? a[1] : ''; }
+      function setStepUntil(st, u) { st.until = u; if (untilNeedsValue(u) && !st.value) st.value = u === 'energyBelow' ? 10 : u === 'hpBelow' ? 25 : u === 'items' ? 20 : 10; }
+      function addStep() { if (state.routine.steps.length < routineSlots.value) state.routine.steps.push(defaultStep(state.routine.steps.length ? 'delve' : 'gather')); }
+      function removeStep(i) { state.routine.steps.splice(i, 1); if (state.routine.idx >= state.routine.steps.length) state.routine.idx = 0; }
+      function moveStep(i, d) {
+        const st = state.routine.steps, j = i + d;
+        if (j < 0 || j >= st.length) return;
+        const tmp = st[i]; st[i] = st[j]; st[j] = tmp;
+      }
+      const TEMPLATES = [
+        { id: 'gatherRest', name: 'Gather and rest', steps: () => [defaultStep('gather'), Object.assign(defaultStep('rest'), { until: 'energyFull' })] },
+        { id: 'gatherDelve', name: 'Gather and delve', steps: () => [defaultStep('gather'), defaultStep('delve')] },
+        { id: 'delveCook', name: 'Delve and cook', steps: () => [Object.assign(defaultStep('delve'), { until: 'minutes', value: 20 }), defaultStep('cook')] }
+      ];
+      function applyTemplate(tp) {
+        game.stopRoutine();
+        state.routine.steps = tp.steps().slice(0, routineSlots.value);
+        state.routine.idx = 0;
+      }
+      function toggleRoutine() {
+        if (state.routine.on) { game.stopRoutine(); return; }
+        if (!game.startRoutine()) toast('Add at least one step first.', 'bad');
+        else save();
+      }
+      const gatherOptions = computed(() => { void state.skillXp; void state.bestFloor; return DD.NODES.map((n) => ({ id: n.id, label: n.name + ' (' + n.item + ')' + (game.nodeLock(n) ? ' 🔒' : '') })); });
+      const MEAL_ORDER = { ration: 0, stew: 1, roast: 2, feast: 3 };
+
       const craftSlot = ref('weapon');
       const craftTier = ref(0);
       const craftQuality = ref(0);
@@ -180,6 +262,7 @@
           case 'heroDie': toast('Slain by ' + e.name + '. You dropped ' + DD.fmt(e.lost) + ' gold and were carried back to town.', 'bad'); break;
           case 'town':
             if (e.reason === 'auto') toast('Badly wounded, your hero heads back to Hearthstead to rest.', 'info');
+            else if (e.reason === 'tired') toast('Out of energy. Your hero heads back to Hearthstead to rest.', 'info');
             departFloor.value = state.floor;
             break;
           case 'skillLevel': toast(e.skill.name + ' is now level ' + e.level + '!', 'good'); break;
@@ -188,6 +271,11 @@
             else if (e.item.rarity >= 3) toast('Crafted ' + e.item.name + ' (' + DD.RARITIES[e.item.rarity].name + ').', 'loot');
             break;
           case 'heroLevel': toast('Level ' + e.level + '! +' + e.points + ' stat points to assign on the Hero screen.', 'good'); break;
+          case 'tired': toast('Too tired to gather. Rest, eat something, or wait for energy to come back.', 'bad'); break;
+          case 'cookStop':
+            if (e.reason === 'ingredients') toast('Out of ingredients. Your hero steps away from the campfire.', 'info');
+            else if (e.reason === 'pantry') toast('The pantry is full. Cooking stopped.', 'info');
+            break;
           case 'craftStop':
             if (e.reason === 'gold') toast('Not enough gold for the forge fee. Crafting stopped.', 'bad');
             else if (e.reason === 'materials') toast('Out of materials. Your hero steps away from the forge.', 'info');
@@ -218,20 +306,21 @@
         }
         const events = game.events.splice(0);
         for (const e of events) { renderer.handle(e); handleUi(e); }
-        if ((loop.n = (loop.n || 0) + 1) % 10 === 0) heroHp.value = Math.min(1, game.b.heroHp / game.stats().maxHp);
+        if ((loop.n = (loop.n || 0) + 1) % 10 === 0) { heroHp.value = Math.min(1, game.b.heroHp / game.stats().maxHp); refreshEnergy(); }
         renderer.draw(Math.min(0.25, (now - (loop.prev || now)) / 1000), now / 1000);
         loop.prev = now;
         rafId = requestAnimationFrame(loop);
       }
 
+      // Time away is replayed with the real game (routines, energy, cooking and all), then summarised.
       function grantOffline(seconds) {
-        if (seconds < 60) return;
-        const r = game.applyOffline(seconds);
-        if (r.gold >= 1 || r.count) {
-          modal.value = { type: 'offline', gold: r.gold, seconds: r.seconds, capped: seconds > r.seconds,
-            gathered: r.got ? { got: r.got, item: r.node.item, xp: r.xp } : null,
-            crafted: r.items ? r.items : null, xp: r.xp || 0, levels: r.levels || 0 };
-        }
+        if (seconds < 60 || !state.cls) return;
+        const plan = game.offlinePlan(seconds), before = game.snapshot();
+        game.replay(plan.simSeconds);
+        const sum = game.offlineSummary(before, game.snapshot());
+        refreshEnergy();
+        const anything = sum.gold >= 1 || sum.mats.length || sum.levels || sum.crafted || sum.cooked || sum.skills.length;
+        if (anything) modal.value = { type: 'offline', seconds: plan.seconds, capped: seconds > plan.seconds, sum };
       }
 
       function save() { if (!unloading && state.cls) writeSave(state); }
@@ -247,6 +336,7 @@
 
       onMounted(() => {
         renderer = new DD.Renderer(canvas.value, game, overlay.value);
+        refreshEnergy();
         if (saved && saved.lastSeen) grantOffline((Date.now() - saved.lastSeen) / 1000);
         last = performance.now();
         rafId = requestAnimationFrame(loop);
@@ -381,7 +471,10 @@
         gathering, skillTab, gatherNodeInfo, skillProgress, skillNodes, nodeLock, gatherTime, gatherPerks, matCounts, materials, commonValue,
         startGather, sellMaterial, sellCommonMaterials, materialValue: (k) => game.materialValue(k), SKILLS: DD.SKILLS, ZONES: DD.ZONES,
         crafting, craftSlot, craftTier, craftQuality, recipe, craftLock, masterwork, tierMaterials, startCraft, stopCraft, refine,
-        CRAFT_TIER_LEVEL: DD.CRAFT_TIER_LEVEL, pct, MENU, menuIcon, openTab, levelCap, nextCapGuardian, refineLock,
+        CRAFT_TIER_LEVEL: DD.CRAFT_TIER_LEVEL, pct, MENU, menuIcon, openTab, energy, energyCost, craftMode, cooking, cookMeal, cookTier, cookQuality, mealRecipe, cookLock,
+        mealEffect, mealName, pantry, pantryInfo, startCook, stopCook, eatMeal, mealText, MEALS: DD.MEALS,
+        routineSlots, routineNextUnlock, UNTIL, ACTS, untilNeedsValue, setStepAct, setStepUntil, addStep, removeStep, moveStep,
+        TEMPLATES, applyTemplate, toggleRoutine, gatherOptions, stepLabel, levelCap, nextCapGuardian, refineLock,
         CLASS_LIST: DD.CLASS_LIST, COMPANIONS: DD.COMPANIONS, SKINS: DD.SKINS, STORE_ITEMS: DD.STORE_ITEMS,
         CONFIG: DD.CONFIG, SLOTS: DD.SLOTS, RARITIES: DD.RARITIES,
         fmt: DD.fmt, fmtTime: DD.fmtTime,

@@ -21,7 +21,9 @@ after the first visit.
 - **Hero levels**: earn experience and choose how your hero grows
 - **Loot and crafting**: find gear in the dungeon or forge your own at Hearthstead
 - **Five gathering skills**: Woodcutting, Mining, Fishing, Herbalism and Tailoring
+- **Cooking**: turn meat from the dungeon into meals that keep your hero going
 - **Hearthstead**: a town to rest, trade and prepare between delves
+- **Routines**: plan a loop of gathering, delving, cooking and crafting, and your hero follows it
 - **Idle progress**: your hero keeps going while you're away
 
 ## Your save
