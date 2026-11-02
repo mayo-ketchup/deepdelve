@@ -16,10 +16,14 @@
     restRate: 0.05,           // fraction of max HP healed per second while resting in town
     deathGoldLoss: 0.10,      // fraction of carried gold lost when the hero dies
     monsterAttackInterval: 1.6,
-    monsterHpGrowth: 1.175,
-    monsterAtkGrowth: 1.145,
+    // Monsters grow a little each floor and jump at each new realm (every zoneLength floors).
+    monsterHpGrowth: 1.09,
+    monsterAtkGrowth: 1.045,
     monsterGoldBase: 0.25,
-    monsterGoldGrowth: 1.135,
+    monsterGoldGrowth: 1.09,
+    zoneHpJump: 3,            // extra multiplier at the start of each new realm
+    zoneAtkJump: 2,
+    zoneGoldJump: 3,
     critMult: 2.5,
     critCap: 0.75,
     evadeCap: 0.75,
@@ -28,8 +32,9 @@
     tapCooldown: 0.2,
     offlineCapHours: 8,
     offlineEfficiency: 0.35,
-    prestigeFloor: 20,
-    gemBonus: 0.10,           // each Soul Gem: +10% damage, health, gold, companion DPS
+    prestigeFloor: 251,       // retiring unlocks once you've beaten the Outer Realm guardian (floor 250)
+    gemBonus: 0.02,           // each Soul Gem: +2% damage, health, gold, companion DPS
+    gemPow: 2,                // Soul Gems owed for your deepest floor ever: (floor / 10) ^ gemPow
     spellCooldown: 5,         // mage: seconds between spells before Arcane Focus
     dropChance: 0.06,         // chance a normal monster drops gear (bosses always drop)
     bagSize: 24,
@@ -38,9 +43,16 @@
     pointsPerLevel: 3,
     heroMaxLevel: 999,
     heroXpBase: 90,           // XP from level 1 to 2...
-    heroXpGrowth: 1.18,       // ...and each level needs this much more (faster than monster XP, so levels lag floors)
-    monsterXpGrowth: 1.13,    // monster XP per floor (boss x5, guardian x15)
-    attrGrowth: 1.06,         // Strength / Vitality compound by this per point
+    heroXpGrowth: 1.02,       // ...and each level needs 2% more (kept gentle: monster XP comes from killsPerLevel below)
+    // Monster XP is derived from a pacing target: a hero at the expected level for a floor needs
+    // killsPerLevel kills to level up there (rising from Start to End by floor 250; boss x5, guardian x15).
+    // Below the expected level you catch up faster; above it, slower.
+    levelsPerFloor: 0.95,
+    killsPerLevelStart: 210,
+    killsPerLevelEnd: 290,
+    attrGrowth: 1.07,         // Strength / Vitality compound by this per point...
+    dmgBase: 3, dmgPerPoint: 0.3,   // ...on top of a flat base + per-point amount
+    hpBase: 30, hpPerPoint: 3,
     agiSpeed: 0.03,           // +3% attack speed per Agility point...
     agiSpeedCap: 1.5,         // ...up to +150%
     focCrit: 0.01,            // +1% crit per Focus point
@@ -132,8 +144,8 @@
 
   // What P points in an attribute give.
   const ATTR = {
-    damage:  (P) => (2 + 1.5 * P) * Math.pow(CONFIG.attrGrowth, P),
-    health:  (P) => (20 + 8 * P) * Math.pow(CONFIG.attrGrowth, P),
+    damage:  (P) => (CONFIG.dmgBase + CONFIG.dmgPerPoint * P) * Math.pow(CONFIG.attrGrowth, P),
+    health:  (P) => (CONFIG.hpBase + CONFIG.hpPerPoint * P) * Math.pow(CONFIG.attrGrowth, P),
     speed:   (P) => 1 + Math.min(CONFIG.agiSpeedCap, P * CONFIG.agiSpeed),
     crit:    (P) => P * CONFIG.focCrit,
     block:   (P) => P * CONFIG.focBlock,
@@ -213,14 +225,23 @@
       fly: !!MONSTERS[kind].fly,
       hop: !!MONSTERS[kind].hop,
       name,
-      hp: 8 * Math.pow(CONFIG.monsterHpGrowth, floor - 1) * (guardian ? 12 : boss ? 7 : 1),
-      atk: 1.5 * Math.pow(CONFIG.monsterAtkGrowth, floor - 1) * (guardian ? 3 : boss ? 2.5 : 1),
+      hp: 8 * scaleAt(floor, CONFIG.monsterHpGrowth, CONFIG.zoneHpJump) * (guardian ? 12 : boss ? 7 : 1),
+      atk: 1.5 * scaleAt(floor, CONFIG.monsterAtkGrowth, CONFIG.zoneAtkJump) * (guardian ? 3 : boss ? 2.5 : 1),
       gold: goldAt(floor) * (guardian ? 25 : boss ? 8 : 1),
-      xp: Math.pow(CONFIG.monsterXpGrowth, floor - 1) * (guardian ? 15 : boss ? 5 : 1)
+      xp: monsterXp(floor) * (guardian ? 15 : boss ? 5 : 1)
     };
   }
 
-  function goldAt(floor) { return CONFIG.monsterGoldBase * Math.pow(CONFIG.monsterGoldGrowth, floor - 1); }
+  // growth per floor, plus a jump each time a new realm starts
+  function scaleAt(floor, perFloor, perZone) {
+    return Math.pow(perFloor, floor - 1) * Math.pow(perZone, Math.floor((floor - 1) / CONFIG.zoneLength));
+  }
+  // XP for one ordinary kill on a floor (see levelsPerFloor / killsPerLevel in CONFIG).
+  function monsterXp(floor) {
+    const k = CONFIG.killsPerLevelStart + (CONFIG.killsPerLevelEnd - CONFIG.killsPerLevelStart) * Math.min(1, (floor - 1) / 249);
+    return xpToLevel(Math.max(1, Math.round(floor * CONFIG.levelsPerFloor))) / k;
+  }
+  function goldAt(floor) { return CONFIG.monsterGoldBase * scaleAt(floor, CONFIG.monsterGoldGrowth, CONFIG.zoneGoldJump); }
 
   // ---- gear ----
   const SLOTS = [
@@ -438,12 +459,13 @@
 
   function newState() {
     return {
-      version: 3,
+      version: 4,
       cls: null,              // chosen on a new game; null shows the class picker
       location: 'town',       // 'town' (Hearthstead: rest, shop, change gear) or 'delve'
       merchant: { stock: [], restockAt: 0 },
       gold: 0,
       gems: 0,
+      depthGems: 0,           // Soul Gems already paid for depth reached (retiring pays only for new depth)
       floor: 1,
       runMaxFloor: 1,
       bestFloor: 1,
@@ -494,6 +516,14 @@
       s.hero.level = Math.max(1, (data.runMaxFloor || 1) - 2);
       s.hero.points = (s.hero.level - 1) * CONFIG.pointsPerLevel;
     }
+    // Version 4 changed Soul Gems: each is worth +2% instead of +10%, and gems are paid for new depth only.
+    // Older saves keep the same total bonus (gems x5) and count their depth so far as already paid.
+    if ((data.version || 1) < 4) {
+      s.gems = Math.round((data.gems || 0) * 0.10 / CONFIG.gemBonus);
+      s.depthGems = Math.floor(Math.pow(s.bestFloor / 10, CONFIG.gemPow));
+      s.hero.xp = 0;   // the XP needed per level changed in version 4
+    }
+    s.version = newState().version;   // converted: never run the conversions above twice
     // materials from before qualities existed become Common
     Object.keys(s.materials).forEach((k) => {
       if (k.indexOf(':') === -1) { s.materials[k + ':0'] = (s.materials[k + ':0'] || 0) + s.materials[k]; delete s.materials[k]; }
@@ -1064,15 +1094,21 @@
     }
 
     // ---- prestige ----
-    gemsFor(runMax) {
-      return runMax < CONFIG.prestigeFloor ? 0 : Math.floor(Math.pow(runMax / 10, 2.2));
-    }
+    // Retiring unlocks once you've beaten the Outer Realm guardian (deepest floor ever past 250).
+    canRetire() { return this.s.bestFloor >= CONFIG.prestigeFloor; }
+
+    // Total Soul Gems owed for a deepest floor. Retiring pays what's owed minus what was already paid,
+    // so reaching an old record again pays nothing and only new depth counts.
+    depthGemsFor(best) { return Math.floor(Math.pow(best / 10, CONFIG.gemPow)); }
+    pendingGems() { return Math.max(0, this.depthGemsFor(this.s.bestFloor) - this.s.depthGems); }
 
     // Gear is kept. nextCls lets the player pick a new class for the next hero.
     prestige(nextCls) {
-      const s = this.s, g = this.gemsFor(s.runMaxFloor);
-      if (!g) return 0;
+      const s = this.s;
+      if (!this.canRetire()) return -1;
+      const g = this.pendingGems();
       s.gems += g;
+      s.depthGems += g;
       s.stats.gemsEarned += g;
       s.stats.prestiges++;
       s.gold = 0;
@@ -1693,7 +1729,7 @@
   Object.assign(DD, {
     CONFIG, CLASSES, CLASS_LIST, SPELLS, ATTRS, FOCUS_PERK, COMPANIONS, MONSTERS, ZONES, SLOTS, RARITIES, STAT_DEFS,
     SKILLS, NODES, CRAFTING, RECIPES, QUALITY_VALUE, CRAFT_TIER_LEVEL, xpForLevel, levelFromXp,
-    MEATS, MEALS, COOKING,
+    MEATS, MEALS, COOKING, scaleAt,
     SKINS, STORE_ITEMS, xpToLevel,
     newState, hydrate, monsterAt, zoneAt, makeItem, compDpsAt, Game, fmt, fmtTime
   });

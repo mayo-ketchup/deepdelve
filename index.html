@@ -533,16 +533,19 @@
       <div v-if="tab==='prestige'" class="list">
         <div class="card column">
           <div class="card-title">Retire your hero</div>
-          <p class="muted">Your hero retires a legend. You lose your gold, upgrades and allies, and get <b class="gemtext">Soul Gems</b> back.
+          <p class="muted">Once you've conquered all five realms, your hero can retire a legend and a new one begins at floor 1, stronger than before.
+            You lose your gold, hero level and allies, and earn <b class="gemtext">Soul Gems</b> for every floor deeper than you've ever been.
             Each gem permanently adds <b>+{{ Math.round(CONFIG.gemBonus*100) }}%</b> to damage, health, gold and ally DPS.
-            You keep your gear, and you can pick a new class.</p>
+            You keep your gear, skills and materials, and you can pick a new class.</p>
+          <p v-if="!canRetire" class="capnote">Defeat <b>The All-Seeing</b>, guardian of the Outer Realm on floor {{ CONFIG.prestigeFloor - 1 }}, to unlock retiring. Your deepest floor so far: <b>{{ state.bestFloor }}</b>.</p>
           <div class="prestige-row">
-            <div><span class="muted">Deepest floor this run</span><b>{{ state.runMaxFloor }}</b></div>
+            <div><span class="muted">Deepest floor ever</span><b>{{ state.bestFloor }}</b></div>
             <div><span class="muted">Gems on retire</span><b class="gemtext">+{{ fmt(gemsOnRetire) }}</b></div>
             <div><span class="muted">Current bonus</span><b>+{{ fmt(state.gems * CONFIG.gemBonus * 100) }}%</b></div>
           </div>
-          <button class="btn btn-gem" :disabled="!gemsOnRetire" @click="openRetire">
-            {{ gemsOnRetire ? 'Retire hero' : 'Reach floor ' + CONFIG.prestigeFloor + ' to retire' }}
+          <p v-if="canRetire && !gemsOnRetire" class="muted small">Go deeper than floor {{ state.bestFloor - 1 }} to earn more Soul Gems. You can still retire to change class.</p>
+          <button class="btn btn-gem" :disabled="!canRetire" @click="openRetire">
+            {{ canRetire ? 'Retire hero' : '🔒 Defeat The All-Seeing to retire' }}
           </button>
         </div>
       </div>
@@ -642,7 +645,7 @@
       </template>
       <template v-else-if="modal.type==='prestige'">
         <h2>Retire your hero?</h2>
-        <p>You get <b class="gemtext">+{{ fmt(gemsOnRetire) }} Soul Gems</b>. Your gold, upgrades and allies reset and you start again on floor 1. You keep your gear.</p>
+        <p>You get <b class="gemtext">+{{ fmt(gemsOnRetire) }} Soul Gems</b>. Your gold, hero level and allies reset and you start again on floor 1. You keep your gear, skills and materials.</p>
         <p class="muted">Choose the class of your next hero:</p>
         <div class="classes">
           <button v-for="c in CLASS_LIST" :key="c.id" class="classcard" :class="{selected: retireCls===c.id}" @click="retireCls=c.id">

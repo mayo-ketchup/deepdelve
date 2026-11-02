@@ -62,7 +62,8 @@
 
       const stats = computed(() => game.stats());
       const cls = computed(() => DD.CLASSES[state.cls] || DD.CLASSES.knight);
-      const gemsOnRetire = computed(() => game.gemsFor(state.runMaxFloor));
+      const gemsOnRetire = computed(() => { void state.bestFloor; void state.depthGems; return game.pendingGems(); });
+      const canRetire = computed(() => { void state.bestFloor; return game.canRetire(); });
       const nextIsBoss = computed(() => (state.floor + 1) % DD.CONFIG.bossEvery === 0);
       const zoneName = computed(() => DD.zoneAt(state.floor).name);
       // ---- hero level & stat points ----
@@ -395,7 +396,9 @@
         const g = game.prestige(retireCls.value);
         modal.value = null;
         departFloor.value = 1;
-        if (g) { toast('Your hero retires a legend. +' + DD.fmt(g) + ' Soul Gems.', 'good'); save(); }
+        if (g > 0) toast('Your hero retires a legend. +' + DD.fmt(g) + ' Soul Gems.', 'good');
+        else if (g === 0) toast('Your hero retires. No new depth this time, so no new Soul Gems.', 'info');
+        if (g >= 0) save();
       }
 
       function hardReset() {
@@ -465,7 +468,7 @@
       const playTime = computed(() => DD.fmtTime(state.stats.playSeconds));
 
       return {
-        state, stats, cls, canvas, overlay, tab, toasts, modal, dev, gemsOnRetire, nextIsBoss, playTime, zoneName, hero, describeAttr, assign, respecCost, respec, itemTitle, enhanceCost, enhanceChance, enhance, ATTRS: DD.ATTRS,
+        state, stats, cls, canvas, overlay, tab, toasts, modal, dev, gemsOnRetire, canRetire, nextIsBoss, playTime, zoneName, hero, describeAttr, assign, respecCost, respec, itemTitle, enhanceCost, enhanceChance, enhance, ATTRS: DD.ATTRS,
         classTraits, retireCls, bagSorted, inTown, departOptions, departFloor, heroHp, restockIn, rerollCost,
         goTown, setOut, price, buyItem, reroll,
         gathering, skillTab, gatherNodeInfo, skillProgress, skillNodes, nodeLock, gatherTime, gatherPerks, matCounts, materials, commonValue,
