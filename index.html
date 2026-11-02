@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="An idle pixel-art RPG: delve five realms, gather, craft and level up your hero.">
+  <meta name="theme-color" content="#0e0c12">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Deepdelve">
+  <title>Deepdelve</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Jersey+10&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app" v-cloak>
+  <header class="topbar">
+    <h1>DEEPDELVE</h1>
+    <div class="resources">
+      <span class="res gold" title="Gold"><i class="coin"></i>{{ fmt(state.gold) }}</span>
+      <span class="res gems" title="Soul Gems"><i class="gem"></i>{{ fmt(state.gems) }}</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage">
+      <div class="frame">
+        <canvas ref="canvas" width="320" height="180" @pointerdown.prevent="tap" aria-label="Battle view. Click to strike."></canvas>
+        <canvas ref="overlay" class="overlay" aria-hidden="true"></canvas>
+      </div>
+      <div v-if="crafting" class="stage-bar">
+        <div class="floor-info">
+          <strong>The Forge</strong>
+          <span class="zone forge">Crafting {{ skillProgress('crafting').level }}</span>
+          <span class="muted">{{ recipe.canMake }} more can be made</span>
+        </div>
+        <div class="row">
+          <button class="btn" @click="stopCraft">Stop crafting</button>
+        </div>
+      </div>
+      <div v-else-if="inTown" class="stage-bar">
+        <div class="floor-info">
+          <strong>Hearthstead</strong>
+          <span class="zone">{{ heroHp >= 1 ? 'Fully rested' : 'Resting ' + Math.floor(heroHp * 100) + '%' }}</span>
+          <span class="muted">Best {{ state.bestFloor }}</span>
+        </div>
+        <div class="row">
+          <label class="muted depart">From
+            <select v-model.number="departFloor">
+              <option v-for="o in departOptions" :key="o.floor" :value="o.floor">Floor {{ o.floor }} ({{ o.label }})</option>
+            </select>
+          </label>
+          <button class="btn btn-gold" :class="{pulse: heroHp >= 1}" @click="setOut">Set out ▸</button>
+          <button class="btn" @click="tab='skills'" title="Gather resources instead of fighting">Gather…</button>
+        </div>
+      </div>
+      <div v-else-if="gathering && gatherNodeInfo" class="stage-bar">
+        <div class="floor-info">
+          <strong>{{ gatherNodeInfo.name }}</strong>
+          <span class="zone">{{ SKILLS.find(s => s.id === gatherNodeInfo.skill).name }} {{ skillProgress(gatherNodeInfo.skill).level }}</span>
+          <span class="muted">{{ ZONES[gatherNodeInfo.zone].name }}</span>
+        </div>
+        <div class="row">
+          <button class="btn" @click="goTown" title="Return to Hearthstead">⌂ Town</button>
+        </div>
+      </div>
+      <div v-else class="stage-bar">
+        <div class="floor-info">
+          <strong>Floor {{ state.floor }}</strong>
+          <span class="zone">{{ zoneName }}</span>
+          <span class="muted">Best {{ state.bestFloor }}</span>
+        </div>
+        <div class="row">
+          <button v-if="!state.autoAdvance" class="btn btn-gold pulse" @click="challenge">
+            {{ nextIsBoss ? 'Challenge Boss' : 'Advance' }} ▸
+          </button>
+          <button class="btn" @click="goTown" title="Return to Hearthstead to rest, shop and change gear">⌂ Town</button>
+        </div>
+      </div>
+      <div class="statline">
+        <div><span>Damage</span><b>{{ fmt(stats.atk) }}</b></div>
+        <div><span>Health</span><b>{{ fmt(stats.maxHp) }}</b></div>
+        <div><span>Hero DPS</span><b>{{ fmt(stats.heroDps) }}</b></div>
+        <div><span>Ally DPS</span><b>{{ fmt(stats.compDps) }}</b></div>
+      </div>
+      <div class="classline">
+        <b>{{ cls.name }} · Lv {{ hero.level }}</b><span v-if="hero.points" class="newpts" @click="tab='upgrades'">{{ hero.points }} points to assign</span><span class="muted">{{ classTraits }}</span>
+      </div>
+      <div class="delve-settings">
+        <label>Return to town when HP is below
+          <select v-model.number="state.settings.autoReturn">
+            <option :value="0">Never</option>
+            <option :value="0.15">15%</option>
+            <option :value="0.25">25%</option>
+            <option :value="0.4">40%</option>
+            <option :value="0.6">60%</option>
+          </select>
+        </label>
+        <label><input type="checkbox" v-model="state.settings.autoDelve"> Set out again after resting</label>
+      </div>
+      <p class="muted small hint-line">HP doesn't refill while you delve. If you die you lose {{ Math.round(CONFIG.deathGoldLoss * 100) }}% of your gold and wake up in town.</p>
+    </section>
+
+    <aside class="panel">
+      <nav class="menu" aria-label="Game menu">
+        <button v-for="m in MENU" :key="m.id" :class="{active: tab===m.id}" :aria-current="tab===m.id ? 'page' : null" @click="openTab(m.id)">
+          <img :src="menuIcon(m.icon)" width="24" height="24" alt="">
+          <span>{{ m.label }}</span>
+          <i v-if="m.id==='gear' && bagSorted.some(isUpgrade)" class="dot" title="An upgrade is in your bag"></i>
+        </button>
+      </nav>
+      <div class="menu-title">{{ MENU.find(m => m.id === tab).label }}<span class="muted">{{ MENU.find(m => m.id === tab).hint }}</span></div>
+
+      <div v-if="tab==='companions'" class="buymode">
+        <span class="muted">Buy</span>
+        <button v-for="m in [1, 10, 'max']" :key="m" :class="{active: state.settings.buyMode===m}" @click="setBuyMode(m)">
+          {{ m === 'max' ? 'MAX' : 'x' + m }}
+        </button>
+      </div>
+
+      <div v-if="tab==='upgrades'" class="list">
+        <div class="card column">
+          <div class="card-title">Level {{ hero.level }} <span class="lvl">{{ cls.name }}</span></div>
+          <div class="xpbar herobar"><i :style="{width: (hero.frac * 100) + '%'}"></i></div>
+          <div class="muted small">{{ fmt(hero.xp) }} / {{ fmt(hero.need) }} XP to level {{ hero.level + 1 }} · Monsters give XP, bosses and guardians give much more.</div>
+        </div>
+        <div class="points" :class="{has: hero.points > 0}">
+          <b>{{ hero.points }}</b> stat point{{ hero.points === 1 ? '' : 's' }} to assign
+          <span class="muted small">· {{ CONFIG.pointsPerLevel }} per level</span>
+        </div>
+        <div v-for="a in ATTRS" :key="a.id" class="card attr">
+          <div class="card-main">
+            <div class="card-title">{{ a.name }} <span class="lvl">{{ state.hero.attrs[a.id] }} points</span></div>
+            <div class="muted">{{ a.desc }}<template v-if="describeAttr(a.id).perk"> Your perk: <span class="tag">{{ describeAttr(a.id).perk }}</span></template></div>
+            <div class="effect">{{ describeAttr(a.id).now }} → <b>{{ describeAttr(a.id).next }}</b></div>
+          </div>
+          <div class="attr-btns">
+            <button class="btn btn-gold" :disabled="hero.points < 1" @click="assign(a.id, 1)">+1</button>
+            <button class="btn" :disabled="hero.points < 5" @click="assign(a.id, 5)">+5</button>
+          </div>
+        </div>
+        <div class="card column">
+          <div class="card-title">Reset stat points</div>
+          <p class="muted">Take back every assigned point and choose again. Costs gold, and only in town.</p>
+          <button class="btn" :disabled="!respecCost || state.gold < respecCost || !inTown" @click="respec">
+            Reset <i class="coin"></i>{{ fmt(respecCost) }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="tab==='merchant'" class="list">
+        <p v-if="!inTown" class="notice">The merchant is in Hearthstead. Press <b>⌂ Town</b> to go back and trade.</p>
+        <div class="bag-head">
+          <span class="card-title">Wares</span>
+          <span class="muted">New stock in {{ restockIn }}</span>
+          <button class="btn tiny-text" :disabled="!inTown || state.gold < rerollCost" @click="reroll">
+            Restock now <i class="coin"></i>{{ fmt(rerollCost) }}
+          </button>
+        </div>
+        <p v-if="!state.merchant.stock.length" class="muted">Sold out. Come back after the restock.</p>
+        <div v-for="it in state.merchant.stock" :key="it.id" class="card item" :style="{borderColor: rarity(it).color}">
+          <img :src="itemIcon(it)" width="40" height="40" :alt="it.name">
+          <div class="card-main">
+            <div class="item-name" :style="{color: rarity(it).color}">
+              <span v-if="isUpgrade(it)" class="up">▲</span>{{ itemTitle(it) }}
+            </div>
+            <div class="muted small">{{ rarity(it).name }} · Floor {{ it.ilvl }}</div>
+            <div v-for="l in itemLines(it)" class="stat" :class="{main: l.main}">{{ l.text }}</div>
+          </div>
+          <button class="btn btn-gold buy" :disabled="!inTown || state.gold < price(it)" @click="buyItem(it)">
+            <small>Buy</small><span><i class="coin"></i>{{ fmt(price(it)) }}</span>
+          </button>
+        </div>
+
+        <div class="bag-head">
+          <span class="card-title">Sell materials</span>
+          <button class="btn tiny-text" :disabled="!inTown || !commonValue" @click="sellCommonMaterials">
+            Sell all Common <i class="coin"></i>{{ fmt(commonValue) }}
+          </button>
+        </div>
+        <p v-if="!materials.length" class="muted">Gather resources in the Skills tab, then sell them here.</p>
+        <div v-for="m in materials" :key="m.id" class="card matrow">
+          <div class="card-main">
+            <div class="item-name" :style="{color: RARITIES[m.q].color}">{{ RARITIES[m.q].name }} {{ m.node.item }} <span class="lvl">x{{ fmt(m.count) }}</span></div>
+            <div class="muted small"><i class="coin"></i>{{ fmt(m.value) }} each</div>
+          </div>
+          <button class="btn btn-dim" :disabled="!inTown" @click="sellMaterial(m)">Sell <i class="coin"></i>{{ fmt(m.count * m.value) }}</button>
+        </div>
+      </div>
+
+      <div v-if="tab==='skills'" class="list">
+        <div class="skillchips">
+          <button v-for="sk in SKILLS" :key="sk.id" :class="{active: skillTab===sk.id}" @click="skillTab=sk.id">
+            {{ sk.name }} <b>{{ skillProgress(sk.id).level }}</b>
+          </button>
+        </div>
+        <template v-for="sk in SKILLS" :key="sk.id">
+          <div v-if="skillTab===sk.id" class="card column">
+            <div class="card-title">{{ sk.name }} <span class="lvl">Lv {{ skillProgress(sk.id).level }}/{{ levelCap }}</span></div>
+            <div class="xpbar"><i :style="{width: (skillProgress(sk.id).frac * 100) + '%'}"></i></div>
+            <div class="muted small">
+              <template v-if="skillProgress(sk.id).need">{{ fmt(skillProgress(sk.id).into) }} / {{ fmt(skillProgress(sk.id).need) }} XP to next level</template>
+              <template v-else-if="skillProgress(sk.id).capped">Level cap reached</template><template v-else>Max level</template>
+            </div>
+            <div class="perks">
+              <span>Luck <b>+{{ pct(gatherPerks(sk.id).luck * 100) }}</b></span>
+              <span>Double gather <b>{{ pct(gatherPerks(sk.id).double * 100) }}</b></span>
+              <span>Speed <b>+1%</b> per level above a resource's requirement</span>
+            </div>
+            <div class="odds">
+              <span class="muted small">Quality odds</span>
+              <template v-for="(o, q) in gatherPerks(sk.id).odds" :key="q">
+                <span v-if="o > 0" :style="{color: RARITIES[q].color}">{{ RARITIES[q].name }} {{ (o * 100).toFixed(o < 0.1 ? 1 : 0) }}%</span>
+                <span v-else class="lockedq">🔒 {{ RARITIES[q].name }} at Lv {{ CONFIG.qualityUnlock[q] }}</span>
+              </template>
+            </div>
+          </div>
+        </template>
+<p v-if="nextCapGuardian" class="capnote">Life skills are capped at <b>level {{ levelCap }}</b>. Defeat <b>{{ nextCapGuardian.name }}</b> on floor {{ nextCapGuardian.floor }} to raise the cap to {{ nextCapGuardian.cap }}.</p>
+        <p v-if="state.location==='delve'" class="notice">You're delving. Return to town to set out gathering instead.</p>
+        <div v-for="n in skillNodes" :key="n.id" class="card" :class="{locked: nodeLock(n), current: gathering && state.gatherNode===n.id}">
+          <div class="card-main">
+            <div class="card-title">{{ n.name }} <span class="lvl">Lv {{ n.level }} · {{ ZONES[n.zone].name }}</span></div>
+            <div v-if="nodeLock(n)" class="warn small">🔒 {{ nodeLock(n) }}</div>
+            <div v-else class="effect">{{ n.item }} · {{ gatherTime(n).toFixed(1) }}s · {{ n.xp }} XP</div>
+            <div class="qcounts"><span v-for="(c, q) in matCounts(n.id)" :key="q" :style="{color: c ? RARITIES[q].color : null}" :class="{zero: !c}" :title="RARITIES[q].name">{{ fmt(c) }}</span></div>
+          </div>
+          <button v-if="gathering && state.gatherNode===n.id" class="btn" disabled>Gathering</button>
+          <button v-else-if="nodeLock(n)" class="btn btn-locked" disabled :title="nodeLock(n)">🔒 Locked</button>
+          <button v-else class="btn btn-gold" :disabled="state.location==='delve'" @click="startGather(n)">Gather</button>
+        </div>
+        <p class="muted small">Gathering is safe, heals you slowly and keeps going while you're away. Better quality materials craft better gear in the Craft tab. Spares sell to the merchant.</p>
+      </div>
+
+      <div v-if="tab==='craft'" class="list">
+        <div class="card column">
+          <div class="card-title">Crafting <span class="lvl">Lv {{ skillProgress('crafting').level }}/{{ levelCap }}</span></div>
+          <div class="xpbar forgebar"><i :style="{width: (skillProgress('crafting').frac * 100) + '%'}"></i></div>
+          <div class="muted small">
+            <template v-if="skillProgress('crafting').need">{{ fmt(skillProgress('crafting').into) }} / {{ fmt(skillProgress('crafting').need) }} XP to next level · </template>
+            Masterwork <span class="forgetext">{{ pct(masterwork * 100) }}</span>: chance a piece comes out one rarity higher
+          </div>
+        </div>
+<p v-if="nextCapGuardian" class="capnote">Life skills are capped at <b>level {{ levelCap }}</b>. Defeat <b>{{ nextCapGuardian.name }}</b> on floor {{ nextCapGuardian.floor }} to raise the cap to {{ nextCapGuardian.cap }}.</p>
+        <p v-if="state.location==='delve' || gathering" class="notice">The forge is in Hearthstead. Return to town to craft.</p>
+
+        <div class="pickrow" role="group" aria-label="Piece">
+          <span class="muted">Piece</span>
+          <button v-for="sl in SLOTS" :key="sl.id" :class="{active: craftSlot===sl.id}" @click="craftSlot=sl.id">{{ sl.name }}</button>
+        </div>
+        <div class="pickrow" role="group" aria-label="Tier">
+          <span class="muted">Tier</span>
+          <button v-for="(z, i) in ZONES" :key="z.id" :class="{active: craftTier===i, locked: craftLock(i)}" :title="craftLock(i) || z.name" @click="craftTier=i">{{ z.name.replace('The ', '').split(' ')[0] }}</button>
+        </div>
+        <div class="pickrow" role="group" aria-label="Quality">
+          <span class="muted">Quality</span>
+          <button v-for="(r, q) in RARITIES" :key="r.id" :class="{active: craftQuality===q}" :style="{color: r.color}" @click="craftQuality=q">{{ r.name }}</button>
+        </div>
+
+        <div class="card column recipe" :style="{borderColor: RARITIES[craftQuality].color}">
+          <div class="item-name" :style="{color: RARITIES[craftQuality].color}">
+            {{ RARITIES[craftQuality].name }} {{ SLOTS.find(s => s.id === craftSlot).name }} · {{ ZONES[craftTier].name }}
+          </div>
+          <div class="muted small">
+            Item level {{ recipe.ilvl }} · {{ recipe.time.toFixed(1) }}s each · {{ recipe.xp }} XP · forge fee <i class="coin"></i>{{ fmt(recipe.fee) }}
+            <template v-if="craftSlot==='weapon'"> · made for your {{ cls.name }}</template>
+          </div>
+          <div v-for="m in recipe.mats" :key="m.node.id" class="matneed" :class="{short: m.have < m.need}">
+            <span :style="{color: RARITIES[craftQuality].color}">{{ RARITIES[craftQuality].name }} {{ m.node.item }}</span>
+            <b>{{ fmt(m.have) }} / {{ m.need }}</b>
+          </div>
+          <div class="row">
+            <button class="btn btn-gold" :disabled="!!craftLock(craftTier) || recipe.canMake < 1 || state.location==='delve' || gathering || crafting" @click="startCraft">
+              {{ craftLock(craftTier) || (crafting ? 'Crafting…' : recipe.canMake ? 'Craft (' + recipe.canMake + ' possible)' : recipe.byMats ? 'Not enough gold for the fee' : 'Not enough materials') }}
+            </button>
+          </div>
+          <p class="muted small">Your hero keeps crafting until the materials or gold run out, or the bag is full, even while you're away.</p>
+        </div>
+
+        <div class="bag-head">
+          <span class="card-title">Refine</span>
+          <span class="muted small">{{ CONFIG.refineRatio }} of one quality make 1 of the next</span>
+        </div>
+        <div v-for="n in tierMaterials" :key="n.id" class="card refine">
+          <div class="card-main">
+            <div class="item-name">{{ n.item }}</div>
+            <div class="qcounts"><span v-for="(c, q) in matCounts(n.id)" :key="q" :style="{color: c ? RARITIES[q].color : null}" :class="{zero: !c}" :title="RARITIES[q].name">{{ fmt(c) }}</span></div>
+          </div>
+          <div class="refine-btns">
+            <button v-for="q in [0, 1, 2, 3]" :key="q" class="btn tiny-text" :disabled="!inTown || !!refineLock(n, q) || matCounts(n.id)[q] < CONFIG.refineRatio" :title="refineLock(n, q)" :style="{color: RARITIES[q + 1].color}" @click="refine(n, q)"><template v-if="refineLock(n, q)">🔒 </template>→ {{ RARITIES[q + 1].name }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="tab==='gear'" class="list">
+        <p v-if="!inTown" class="notice">You can only change or sell gear in Hearthstead. Press <b>⌂ Town</b> to go back.</p>
+        <div class="equipped">
+          <div v-for="sl in SLOTS" :key="sl.id" class="slot" :class="{empty: !state.gear[sl.id]}"
+               :style="state.gear[sl.id] ? {borderColor: rarity(state.gear[sl.id]).color} : null">
+            <img :src="state.gear[sl.id] ? itemIcon(state.gear[sl.id]) : slotIcon(sl.id)" width="40" height="40" :alt="sl.name">
+            <div class="slot-body">
+              <div class="slot-label muted">{{ sl.name }}</div>
+              <template v-if="state.gear[sl.id]">
+                <div class="item-name" :style="{color: rarity(state.gear[sl.id]).color}">{{ itemTitle(state.gear[sl.id]) }}</div>
+                <div v-for="l in itemLines(state.gear[sl.id])" class="stat" :class="{main: l.main}">{{ l.text }}</div>
+                <div v-if="!canEquip(state.gear[sl.id])" class="warn">Needs a different class</div>
+                <button v-if="(state.gear[sl.id].enh || 0) < CONFIG.enhanceMax" class="btn tiny-text enh" :disabled="!inTown || state.gold < enhanceCost(state.gear[sl.id])" @click="enhance(state.gear[sl.id])"
+                  :title="'Success chance ' + Math.round(enhanceChance(state.gear[sl.id]) * 100) + '%. Failing only costs the gold.'">
+                  Enhance +{{ (state.gear[sl.id].enh || 0) + 1 }} · {{ Math.round(enhanceChance(state.gear[sl.id]) * 100) }}% · <i class="coin"></i>{{ fmt(enhanceCost(state.gear[sl.id])) }}
+                </button>
+                <div v-else class="muted small">Fully enhanced</div>
+              </template>
+              <div v-else class="muted small">Empty</div>
+            </div>
+            <button v-if="state.gear[sl.id]" class="btn tiny" :disabled="!inTown" @click="unequip(sl.id)" title="Move to bag">✕</button>
+          </div>
+        </div>
+
+        <div class="bag-head">
+          <span class="card-title">Bag {{ state.bag.length }}/{{ CONFIG.bagSize }}</span>
+          <label class="muted autosalvage">Auto-sell
+            <select v-model.number="state.settings.autoSalvage">
+              <option :value="0">Off</option>
+              <option :value="1">Common</option>
+              <option :value="2">Uncommon and lower</option>
+              <option :value="3">Rare and lower</option>
+            </select>
+          </label>
+          <button class="btn tiny-text" :disabled="!inTown || !state.bag.length" @click="salvageJunk">Sell non-upgrades</button>
+        </div>
+        <p v-if="!state.bag.length" class="muted">Monsters sometimes drop gear, and bosses always do. The merchant in town sells more. Your gear stays with you when you retire.</p>
+
+        <div v-for="it in bagSorted" :key="it.id" class="card item" :style="{borderColor: rarity(it).color}">
+          <img :src="itemIcon(it)" width="40" height="40" :alt="it.name">
+          <div class="card-main">
+            <div class="item-name" :style="{color: rarity(it).color}">
+              <span v-if="isUpgrade(it)" class="up">▲</span>{{ itemTitle(it) }}
+            </div>
+            <div class="muted small">{{ rarity(it).name }} · Floor {{ it.ilvl }}<template v-if="it.cls && !canEquip(it)"> · <span class="warn">{{ CLASS_LIST.find(c => c.id === it.cls).name }} only</span></template></div>
+            <div v-for="l in itemLines(it)" class="stat" :class="{main: l.main}">{{ l.text }}</div>
+          </div>
+          <div class="item-actions">
+            <button class="btn" :disabled="!inTown || !canEquip(it)" @click="equipItem(it)">Equip</button>
+            <button class="btn btn-dim" :disabled="!inTown" @click="salvageItem(it)" title="Sell">Sell <i class="coin"></i>{{ fmt(salvageValue(it)) }}</button>
+            <button v-if="(it.enh || 0) < CONFIG.enhanceMax" class="btn btn-dim" :disabled="!inTown || state.gold < enhanceCost(it)" @click="enhance(it)" :title="Math.round(enhanceChance(it) * 100) + '% success. Failing only costs the gold.'">+{{ (it.enh || 0) + 1 }} <i class="coin"></i>{{ fmt(enhanceCost(it)) }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="tab==='companions'" class="list">
+        <div v-for="c in COMPANIONS" :key="c.id" class="card" :class="{locked: level('companion', c.id)===0 && quote('companion', c.id).cost > state.gold * 3 && c.id!=='squire'}">
+          <div class="card-main">
+            <div class="card-title">{{ c.name }} <span class="lvl">Lv {{ level('companion', c.id) }}</span></div>
+            <div class="muted">{{ c.desc }}</div>
+            <div class="effect">{{ describe('companion', c.id).now }} → <b>{{ describe('companion', c.id).next }}</b></div>
+          </div>
+          <button class="btn buy" :disabled="!quote('companion', c.id).afford" @click="buy('companion', c.id)">
+            <small>{{ level('companion', c.id) ? 'x' + quote('companion', c.id).count : 'Hire' }}</small>
+            <span><i class="coin"></i>{{ fmt(quote('companion', c.id).cost) }}</span>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="tab==='prestige'" class="list">
+        <div class="card column">
+          <div class="card-title">Retire your hero</div>
+          <p class="muted">Your hero retires a legend. You lose your gold, upgrades and allies, and get <b class="gemtext">Soul Gems</b> back.
+            Each gem permanently adds <b>+{{ Math.round(CONFIG.gemBonus*100) }}%</b> to damage, health, gold and ally DPS.
+            You keep your gear, and you can pick a new class.</p>
+          <div class="prestige-row">
+            <div><span class="muted">Deepest floor this run</span><b>{{ state.runMaxFloor }}</b></div>
+            <div><span class="muted">Gems on retire</span><b class="gemtext">+{{ fmt(gemsOnRetire) }}</b></div>
+            <div><span class="muted">Current bonus</span><b>+{{ fmt(state.gems * CONFIG.gemBonus * 100) }}%</b></div>
+          </div>
+          <button class="btn btn-gem" :disabled="!gemsOnRetire" @click="openRetire">
+            {{ gemsOnRetire ? 'Retire hero' : 'Reach floor ' + CONFIG.prestigeFloor + ' to retire' }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="tab==='skins'" class="list skins">
+        <div v-for="sk in SKINS" :key="sk.id" class="skin" :class="{equipped: state.skin===sk.id, locked: !ownsSkin(sk.id)}">
+          <img :src="skinPreview(sk.id)" :alt="sk.name" width="64" height="64">
+          <div class="skin-name">{{ sk.name }}</div>
+          <button v-if="state.skin===sk.id" class="btn" disabled>Equipped</button>
+          <button v-else-if="ownsSkin(sk.id)" class="btn" @click="equip(sk.id)">Equip</button>
+          <div v-else class="muted small">🔒 {{ sk.note }}</div>
+        </div>
+      </div>
+
+      <div v-if="tab==='store'" class="list">
+        <p class="muted">Support the game and get extra goodies. <span v-if="!dev">Opening soon.</span><span v-else class="devtag">DEV MODE: purchases are granted for free</span></p>
+        <div v-for="item in STORE_ITEMS" :key="item.sku" class="card">
+          <div class="card-main">
+            <div class="card-title">{{ item.name }}</div>
+            <div class="muted">{{ item.desc }}</div>
+          </div>
+          <button class="btn btn-gold" :disabled="owns(item.sku)" @click="purchase(item)">
+            {{ owns(item.sku) ? 'Owned' : (dev ? 'Grant' : 'Soon') }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="tab==='settings'" class="list">
+        <div class="card column">
+          <div class="card-title">Statistics</div>
+          <table class="stats">
+            <tr><td>Time played</td><td>{{ playTime }}</td></tr>
+            <tr><td>Monsters slain</td><td>{{ fmt(state.stats.monstersSlain) }}</td></tr>
+            <tr><td>Bosses slain</td><td>{{ fmt(state.stats.bossesSlain) }}</td></tr>
+            <tr><td>Zone guardians slain</td><td>{{ fmt(state.stats.guardiansSlain) }}</td></tr>
+            <tr><td>Items found</td><td>{{ fmt(state.stats.itemsFound) }}</td></tr>
+            <tr><td>Items crafted</td><td>{{ fmt(state.stats.itemsCrafted) }}</td></tr>
+            <tr><td>Total gold earned</td><td>{{ fmt(state.stats.totalGold) }}</td></tr>
+            <tr><td>Deaths</td><td>{{ fmt(state.stats.deaths) }}</td></tr>
+            <tr><td>Heroes retired</td><td>{{ state.stats.prestiges }}</td></tr>
+            <tr><td>Deepest floor ever</td><td>{{ state.bestFloor }}</td></tr>
+          </table>
+        </div>
+        <div class="card column">
+          <div class="card-title">Save</div>
+          <p class="muted">The game saves automatically every 10 seconds in this browser.</p>
+          <div class="row">
+            <button class="btn" @click="saveNow">Save now</button>
+            <button class="btn btn-danger" @click="modal={type:'reset'}">Reset game</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <div class="toasts">
+    <div v-for="t in toasts" :key="t.id" class="toast" :class="t.kind">{{ t.text }}</div>
+  </div>
+
+  <div v-if="!state.cls && !(modal && modal.type==='badsave')" class="modal-back">
+    <div class="modal wide">
+      <h2>Choose your hero</h2>
+      <p class="muted">Your journey begins in the Whispering Woods. Every 50 floors the path leads somewhere darker.</p>
+      <div class="classes">
+        <button v-for="c in CLASS_LIST" :key="c.id" class="classcard" @click="chooseClass(c.id)">
+          <img :src="heroPreview(c.id, state.skin, 5)" width="80" height="80" :alt="c.name">
+          <span class="classname">{{ c.name }}</span>
+          <span class="role">{{ c.role }}</span>
+          <span class="muted">{{ c.desc }}</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="modal" class="modal-back" @click.self="modal.type!=='badsave' && (modal=null)">
+    <div class="modal" :class="{wide: modal.type==='prestige'}">
+      <template v-if="modal.type==='offline'">
+        <h2>Welcome back!</h2>
+        <template v-if="modal.crafted">
+          <p>Your hero kept working the forge for <b>{{ fmtTime(modal.seconds) }}</b> while you were away.</p>
+          <p class="big">{{ modal.crafted.length }} item{{ modal.crafted.length === 1 ? '' : 's' }} crafted</p>
+          <p v-for="it in modal.crafted.slice(0, 6)" :key="it.id" :style="{color: RARITIES[it.rarity].color}">{{ it.name }}</p>
+        </template>
+        <template v-else-if="modal.gathered">
+          <p>Your hero kept gathering for <b>{{ fmtTime(modal.seconds) }}</b> while you were away.</p>
+          <p v-for="(c, q) in modal.gathered.got" v-show="c" :key="q" class="big" :style="{color: RARITIES[q].color}">+{{ fmt(c) }} {{ q ? RARITIES[q].name + ' ' : '' }}{{ modal.gathered.item }}</p>
+          <p class="skilltext">+{{ fmt(modal.gathered.xp) }} XP</p>
+        </template>
+        <template v-else>
+          <p>Your hero kept delving for <b>{{ fmtTime(modal.seconds) }}</b> while you were away.</p>
+          <p class="big gold"><i class="coin"></i>+{{ fmt(modal.gold) }}</p>
+          <p v-if="modal.xp" class="skilltext">+{{ fmt(modal.xp) }} XP<template v-if="modal.levels"> · {{ modal.levels }} level{{ modal.levels === 1 ? '' : 's' }} gained</template></p>
+        </template>
+        <p v-if="modal.capped" class="muted small">Offline time is capped at {{ CONFIG.offlineCapHours }} hours.</p>
+        <button class="btn btn-gold" @click="modal=null">Collect</button>
+      </template>
+      <template v-else-if="modal.type==='prestige'">
+        <h2>Retire your hero?</h2>
+        <p>You get <b class="gemtext">+{{ fmt(gemsOnRetire) }} Soul Gems</b>. Your gold, upgrades and allies reset and you start again on floor 1. You keep your gear.</p>
+        <p class="muted">Choose the class of your next hero:</p>
+        <div class="classes">
+          <button v-for="c in CLASS_LIST" :key="c.id" class="classcard" :class="{selected: retireCls===c.id}" @click="retireCls=c.id">
+            <img :src="heroPreview(c.id, state.skin, 4)" width="64" height="64" :alt="c.name">
+            <span class="classname">{{ c.name }}</span>
+            <span class="role">{{ c.role }}</span>
+          </button>
+        </div>
+        <div class="row">
+          <button class="btn" @click="modal=null">Not yet</button>
+          <button class="btn btn-gem" @click="confirmPrestige">Retire</button>
+        </div>
+      </template>
+      <template v-else-if="modal.type==='badsave'">
+        <h2>Save couldn't be loaded</h2>
+        <p>Your save was changed outside the game, or it's damaged, so it can't be used. A new game will start.</p>
+        <p class="muted small">The old save was kept aside in this browser, in case it was damaged by accident.</p>
+        <button class="btn btn-gold" @click="modal=null">Start a new game</button>
+      </template>
+      <template v-else-if="modal.type==='reset'">
+        <h2>Reset everything?</h2>
+        <p>This permanently deletes your save, including Soul Gems, gear and skins. You can't undo it.</p>
+        <div class="row">
+          <button class="btn" @click="modal=null">Cancel</button>
+          <button class="btn btn-danger" @click="hardReset">Delete save</button>
+        </div>
+      </template>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+<script src="js/game.js"></script>
+<script src="js/sprites.js"></script>
+<script src="js/render.js"></script>
+<script src="js/save.js"></script>
+<script src="js/app.js"></script>
+<script>
+  // Offline support and "Add to Home Screen". Service workers only run on a real website (https or localhost).
+  if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+  }
+</script>
+</body>
+</html>

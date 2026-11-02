@@ -1,0 +1,16 @@
+{
+  "name": "Deepdelve",
+  "short_name": "Deepdelve",
+  "description": "An idle pixel-art RPG: delve five realms, gather, craft and level up your hero.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0e0c12",
+  "theme_color": "#0e0c12",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
