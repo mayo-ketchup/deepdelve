@@ -345,3 +345,29 @@ table.stats td:last-child { font-size: 17px; }
   .menu-title { scroll-margin-top: 12px; }
   .toasts { bottom: calc(126px + env(safe-area-inset-bottom, 0px)); }
 }
+
+/* ---- popups that fit any screen ---- */
+/* A popup taller than the screen scrolls inside itself instead of running off the bottom. */
+.modal-back {
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
+           max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+}
+.modal {
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Phones: class cards become compact rows, picture on the left and text on the right. */
+@media (max-width: 560px) {
+  .modal { padding: 16px 14px; }
+  .modal h2 { margin-bottom: 8px; }
+  .classes { gap: 8px; margin: 10px 0; }
+  .classcard {
+    display: grid; grid-template-columns: 56px 1fr; grid-template-rows: auto auto 1fr;
+    column-gap: 12px; row-gap: 2px; align-items: start; text-align: left; padding: 10px;
+  }
+  .classcard img { grid-row: 1 / span 3; width: 56px; height: 56px; }
+  .classcard .classname, .classcard .role { justify-self: start; }
+  .classcard .muted { font-size: 16px; line-height: 1.15; }
+}
